@@ -11,6 +11,10 @@
 3. [Ước lượng bài toán & Capacity Planning](#3-ước-lượng-bài-toán--capacity-planning)
 4. [Top 3 Design Patterns phù hợp](#4-top-3-design-patterns-phù-hợp)
 5. [Đề xuất Tech Stack](#5-đề-xuất-tech-stack)
+6. [Phân tích Scale-up](#6-phân-tích-scale-up)
+7. [Schema Linker — Cơ chế phát hiện Relationship](#7-schema-linker--cơ-chế-phát-hiện-relationship)
+8. [Multi-Agent Communication & Hallucination](#8-multi-agent-communication--hallucination)
+9. [Semantic Layer — Yêu cầu chi tiết](#9-semantic-layer--yêu-cầu-chi-tiết)
 
 ---
 
@@ -646,6 +650,748 @@ Trọng số dựa trên yêu cầu domain Banking/POS:
 
 ---
 
-*Tài liệu Solution Suggestion v1.0*
-*Ngày tạo: 25/03/2026*
+## 6. PHÂN TÍCH SCALE-UP
+
+### 6.1 Quy mô hiện tại vs. Scale-up
+
+Kiến trúc hiện tại được thiết kế cho **small schema**. Khi scale lên, có 3 ngưỡng gãy quan trọng:
+
+| Quy mô | Bảng | Columns | Rows (bảng lớn nhất) | Vấn đề xuất hiện |
+|--------|------|---------|---------------------|-------------------|
+| **Small** (hiện tại) | 14 | 90 | 200K | Không — approach hiện tại đủ |
+| **Medium** | 50-100 | 300-500 | 1-10M | Retrieval accuracy giảm, domain clusters chồng chéo, context window LLM bắt đầu bị đầy |
+| **Large** | 200+ | 1000+ | 100M+ | Không thể nhồi schema vào 1 prompt, embedding space quá rộng, ambiguity tăng mạnh |
+
+### 6.2 Thay đổi cần thiết theo từng ngưỡng
+
+#### Ngưỡng Medium (50-100 bảng)
+
+| Component | Hiện tại (Small) | Cần thay đổi | Lý do |
+|-----------|-----------------|---------------|-------|
+| **Vector Store** | pgvector (đủ <10K embeddings) | Pinecone / Weaviate | ANN index tốt hơn, metadata filtering phức tạp hơn, horizontal scaling |
+| **Retrieval** | 1-step: query → top-K chunks | **2-step hierarchical**: query → cluster → tables trong cluster | 1-step retrieve trên 100 bảng accuracy giảm, cần thu hẹp search space trước |
+| **Domain Clusters** | 7 clusters, quản lý thủ công | Semi-auto clustering + manual review | 100 bảng → 20-30 clusters, maintain thủ công không khả thi |
+| **LLM Context** | Đưa 2-4 bảng (fit prompt) | Đưa 3-5 bảng + schema summary cho bảng liên quan | Token budget tăng, cần selective column inclusion |
+| **Embedding Model** | bge-m3 (multilingual) | + domain fine-tuned adapter | Generic embedding kém khi schema terms quá chuyên biệt |
+
+```
+Hierarchical Retrieval (2-step):
+
+  User Question
+       │
+       ▼
+  Step 1: "Cluster nào liên quan?"
+       │   Query embedding vs. cluster description embeddings
+       │   → Top 2-3 clusters
+       ▼
+  Step 2: "Bảng nào trong cluster đó?"
+       │   Query embedding vs. table embeddings (trong cluster đã chọn)
+       │   → Top 3-5 tables + JOIN paths
+       ▼
+  Context Package → SQL Generator
+```
+
+#### Ngưỡng Large (200+ bảng)
+
+| Component | Cần thay đổi | Lý do |
+|-----------|---------------|-------|
+| **Schema Catalog** | Schema catalog service riêng biệt (giống data catalog) | 200+ bảng cần indexing, versioning, lineage tracking |
+| **Retrieval** | **Multi-hop retrieval**: query → domain → sub-domain → tables | 2-step không đủ khi có 50+ clusters |
+| **Embedding** | Fine-tuned embedding model trên schema corpus | Generic model không capture được domain-specific semantics ở scale lớn |
+| **LLM** | Selective column pruning + schema compression | 200 bảng × 10 columns = 2000 columns, không thể đưa hết vào context |
+| **Query Execution** | Table partitioning, materialized views, query plan advisor | Billions of rows cần optimization ở DB level |
+| **Caching** | Multi-layer cache: embedding cache + query result cache + LLM response cache | Giảm latency và cost tại mọi layer |
+
+### 6.3 Chiến lược Scale-up khuyến nghị
+
+```
+Scale sớm (không cần chờ bottleneck):
+  ✓ Connection pooling + read replica       → sẵn sàng từ đầu
+  ✓ Modular agent design                    → swap component dễ
+  ✓ Schema metadata versioning              → track schema changes
+
+Scale khi cần (khi thấy bottleneck thực tế):
+  ⟳ pgvector → dedicated vector DB          → khi retrieval accuracy < 85%
+  ⟳ 1-step → hierarchical retrieval         → khi số bảng > 50
+  ⟳ Generic → fine-tuned embedding          → khi domain terms quá chuyên biệt
+  ⟳ Single DB → partitioned + materialized  → khi query latency > 5s
+
+Không cần scale quá sớm (over-engineering):
+  ✗ Kubernetes orchestration                 → Docker Compose đủ cho < 500 users
+  ✗ Multi-region deployment                  → Single region đủ cho internal tool
+  ✗ Custom-trained LLM                       → API-based LLM đủ cho < 100 bảng
+```
+
+**Kết luận:** Với scope Banking/POS hiện tại (14 bảng), kiến trúc hiện tại đủ cho Phase 1-3. Modular design cho phép swap từng component khi scale mà không cần rewrite toàn bộ. Ưu tiên scale **retrieval layer** trước vì đó là bottleneck đầu tiên khi số bảng tăng.
+
+---
+
+## 7. SCHEMA LINKER — CƠ CHẾ PHÁT HIỆN RELATIONSHIP
+
+### 7.1 Nguồn relationship: Auto-detect + User-defined
+
+Schema Linker sử dụng **2 nguồn** để xây dựng relationship graph:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  RELATIONSHIP SOURCES                        │
+│                                                              │
+│  ┌──────────────────────────────┐                           │
+│  │  SOURCE 1: AUTO-DETECT      │  ← Primary (tự động)      │
+│  │  (từ cấu trúc DB hiện có)    │                           │
+│  │                              │                           │
+│  │  • schema.json relationships │  13 FK đã define sẵn      │
+│  │  • INFORMATION_SCHEMA        │  Validate FK constraints  │
+│  │  • Column naming conventions │  xxx_id → FK pattern      │
+│  │  • REFERENCES constraints    │  DDL-level FK             │
+│  └──────────────┬───────────────┘                           │
+│                 │                                            │
+│                 ▼ merge                                      │
+│          ┌──────────────┐                                   │
+│          │ RELATIONSHIP │                                   │
+│          │    GRAPH     │ → Adjacency list + JOIN conditions│
+│          └──────────────┘                                   │
+│                 ▲ enrich                                     │
+│                 │                                            │
+│  ┌──────────────┴───────────────┐                           │
+│  │  SOURCE 2: USER-DEFINED     │  ← Enrichment (thủ công)  │
+│  │  (semantic layer config)     │                           │
+│  │                              │                           │
+│  │  • Business aliases          │  "doanh thu" → tables     │
+│  │  • Self-referencing patterns │  transfers: from/to       │
+│  │  • Implicit relationships    │  Không có FK nhưng có     │
+│  │  • Disambiguation rules      │  logic relationship       │
+│  │  • Domain cluster overrides  │                           │
+│  └──────────────────────────────┘                           │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 7.2 Auto-detect — Từ cấu trúc DB
+
+#### Nguồn 1: `schema.json` (đã có sẵn)
+
+```json
+// schema.json đã define relationships rõ ràng:
+
+// employees → branches
+"relationships": [
+  {"from": "branch_id", "to": "branches.id", "type": "many-to-one"}
+]
+
+// accounts → customers
+"relationships": [
+  {"from": "customer_id", "to": "customers.id", "type": "many-to-one"}
+]
+
+// sales → merchants, terminals, products, cards
+"relationships": [
+  {"from": "merchant_id", "to": "merchants.id", "type": "many-to-one"},
+  {"from": "terminal_id", "to": "terminals.id", "type": "many-to-one"},
+  {"from": "product_id", "to": "products.id", "type": "many-to-one"},
+  {"from": "card_id", "to": "cards.id", "type": "many-to-one"}
+]
+```
+
+**Coverage:** Auto-detect từ `schema.json` bắt được **13/13 FK relationships** trong schema hiện tại.
+
+#### Nguồn 2: PostgreSQL metadata (validation + bổ sung)
+
+```sql
+-- Query INFORMATION_SCHEMA để cross-validate FK relationships
+SELECT
+  tc.table_name       AS source_table,
+  kcu.column_name     AS source_column,
+  ccu.table_name      AS target_table,
+  ccu.column_name     AS target_column
+FROM information_schema.table_constraints tc
+JOIN information_schema.key_column_usage kcu
+  ON tc.constraint_name = kcu.constraint_name
+JOIN information_schema.constraint_column_usage ccu
+  ON tc.constraint_name = ccu.constraint_name
+WHERE tc.constraint_type = 'FOREIGN KEY';
+```
+
+**Vai trò:** Cross-validate với `schema.json` — nếu schema.json thiếu FK, DB metadata bổ sung. Nếu schema.json có FK mà DB không có → cảnh báo inconsistency.
+
+### 7.3 User-defined — Cho những gì auto-detect không bắt được
+
+| Loại | Ví dụ | Tại sao auto-detect không bắt |
+|------|-------|-------------------------------|
+| **Self-referencing semantics** | `transfers.from_account` và `transfers.to_account` đều → `accounts.id` | FK tồn tại, nhưng semantic "from" vs "to" cần human label để LLM hiểu đây là 2 roles khác nhau |
+| **Business term → table mapping** | "doanh thu" liên quan đến `sales`, không phải `statements` | Không có trong DB metadata, đây là domain knowledge |
+| **Implicit relationships** | "merchant performance" cần JOIN `sales → merchants → terminals` | Mỗi FK riêng lẻ có trong DB, nhưng "performance" là concept business cần human define path |
+| **Disambiguation** | `customers.created_at` vs `accounts.opened_at` — cái nào là "ngày onboard"? | Cả hai đều là timestamp, DB không biết cái nào mang nghĩa business |
+| **Domain cluster grouping** | Nhóm `sales + merchants + terminals + products` thành "transaction_analytics" | DB metadata không có concept "domain", cần human organize |
+
+### 7.4 Linker Boot Process — 2 giai đoạn
+
+```
+BOOT TIME (1 lần khi khởi động, hoặc khi schema thay đổi)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Bước 1: Parse schema.json
+    → Extract 14 tables, 90 columns, 13 relationships
+    → Build adjacency list (relationship graph)
+
+  Bước 2: Query INFORMATION_SCHEMA (optional, validation)
+    → Cross-validate FK constraints với schema.json
+    → Log warnings nếu inconsistency
+
+  Bước 3: Load semantic layer config
+    → Overlay business aliases, domain clusters, sensitive columns
+    → Merge user-defined relationships vào graph
+
+  Bước 4: Generate embeddings
+    → Graph-aware chunks (per domain cluster)
+    → Upsert vào vector store
+
+  Output: Relationship Graph + Embedded Chunks sẵn sàng
+
+RUNTIME (mỗi query)
+━━━━━━━━━━━━━━━━━━
+
+  Input:  User question
+  Step 1: Vector search → relevant domain cluster(s)
+  Step 2: Graph traversal → extract tables + JOIN paths từ cluster
+  Step 3: Resolve metrics + dimensions từ semantic layer
+  Step 4: Fetch few-shot examples tương tự
+  Output: Context Package → SQL Generator
+```
+
+---
+
+## 8. MULTI-AGENT COMMUNICATION & HALLUCINATION
+
+### 8.1 Vấn đề đặt ra
+
+> Nếu tách Linker và Generator thành 2 agents, Generator có đủ thông tin về relationships không? Truyền qua nhiều agent có tăng hallucination không?
+
+### 8.2 Generator nhận được gì từ Linker?
+
+Linker **không chỉ trả về tên bảng**. Output của Linker là **Context Package** — một structured document chứa đầy đủ thông tin:
+
+```
+Ví dụ: User hỏi "Top 10 merchant có doanh thu cao nhất quý trước?"
+
+┌──── CONTEXT PACKAGE (Linker → Generator) ────┐
+│                                               │
+│  tables: [                                    │
+│    {                                          │
+│      name: "merchants",                       │
+│      columns: [id, name, mcc, city],          │  ← CHỈ columns liên quan
+│      description: "Merchants where..."        │    không phải toàn bộ schema
+│    },                                         │
+│    {                                          │
+│      name: "sales",                           │
+│      columns: [id, merchant_id, total_amount, │
+│                status, sale_time],             │
+│      description: "Records of sales..."       │
+│    }                                          │
+│  ]                                            │
+│                                               │
+│  join_paths: [                                │
+│    "sales.merchant_id = merchants.id"         │  ← JOIN ĐẦY ĐỦ
+│  ]                                            │
+│                                               │
+│  resolved_metrics: {                          │
+│    "doanh thu":                               │  ← ĐÃ RESOLVE sẵn
+│      "SUM(sales.total_amount)                 │
+│       WHERE sales.status = 'completed'"       │
+│  }                                            │
+│                                               │
+│  resolved_dimensions: {                       │
+│    "quý trước":                               │  ← ĐÃ RESOLVE sẵn
+│      "sale_time >= DATE_TRUNC('quarter',      │
+│       CURRENT_DATE - INTERVAL '1 quarter')    │
+│       AND sale_time < DATE_TRUNC('quarter',   │
+│       CURRENT_DATE)"                          │
+│  }                                            │
+│                                               │
+│  few_shot_examples: [                         │
+│    {                                          │  ← VÍ DỤ TƯƠNG TỰ
+│      q: "Top 5 sản phẩm doanh thu cao nhất?" │
+│      sql: "SELECT p.name, SUM(...) ..."       │
+│    }                                          │
+│  ]                                            │
+│                                               │
+│  sensitive_columns: [                         │
+│    "cards.cvv", "cards.card_number"            │  ← DANH SÁCH CẤM
+│  ]                                            │
+│                                               │
+│  column_enums: {                              │
+│    "sales.status":                            │  ← GIÁ TRỊ HỢP LỆ
+│      ["completed","pending","failed",         │
+│       "reversed"]                             │
+│  }                                            │
+│                                               │
+└───────────────────────────────────────────────┘
+```
+
+**Generator nhận structured data**, không phải mô tả bằng ngôn ngữ tự nhiên. Nó biết chính xác:
+- Bảng nào, column nào → không bịa table/column
+- JOIN condition cụ thể → không đoán relationship
+- Metric đã resolve → không diễn giải sai "doanh thu"
+- Enum values → không bịa status value
+
+### 8.3 Multi-agent có tăng hallucination không?
+
+**Không — nếu inter-agent contract là structured data. Thực tế nó giảm hallucination.**
+
+#### So sánh trực tiếp:
+
+| Yếu tố | Single Agent (1 LLM call) | Multi-Agent (Linker + Generator) |
+|---------|--------------------------|----------------------------------|
+| **Prompt size** | Rất dài — toàn bộ schema (14 bảng × 90 columns) + semantic rules + examples + output format | Ngắn và focused — Generator chỉ nhận 2-5 bảng liên quan |
+| **Task complexity** | LLM phải đồng thời: tìm bảng + resolve metric + chọn JOIN + sinh SQL + validate | Mỗi agent chỉ 1 nhiệm vụ duy nhất |
+| **Nguồn hallucination** | **Cao** — prompt dài + task phức tạp → LLM dễ "bịa" column/table không tồn tại | **Thấp** — Linker là retrieval (deterministic), search space của Generator bị thu hẹp |
+| **Khi LLM bịa column** | Không ai kiểm tra → SQL fail ở runtime, user thấy lỗi | Validator agent bắt ngay → retry với error feedback |
+| **Khi metric bị hiểu sai** | LLM tự diễn giải "doanh thu" → có thể sai | Semantic layer đã resolve sẵn → đúng definition |
+
+#### Tại sao Linker KHÔNG gây hallucination?
+
+```
+Linker = Vector Search           → Deterministic (cosine similarity)
+       + Metric Resolution       → Dictionary lookup (key → value)
+       + JOIN Path Finder        → Graph traversal (BFS/DFS)
+       + Few-shot Retrieval      → Similarity search (deterministic)
+
+→ KHÔNG gọi LLM ở Linker → KHÔNG có cơ hội hallucinate
+→ Output là structured data → Không có ambiguity khi truyền cho Generator
+```
+
+#### Rủi ro thực tế: Retrieval Miss (không phải hallucination)
+
+```
+Rủi ro thực tế KHÔNG phải hallucination mà là RETRIEVAL MISS:
+
+  User hỏi: "Tỷ lệ refund theo merchant"
+
+  ✗ Linker retrieve SAI:
+    → Cluster "transaction_analytics" (có sales, merchants — THIẾU refunds!)
+    → Generator sinh SQL không có refunds table
+    → Kết quả SAI (nhưng SQL valid syntactically)
+
+  ✓ Linker retrieve ĐÚNG:
+    → Cluster "refund_analysis" (có refunds, sales, merchants)
+    → Generator có đủ context → SQL đúng
+
+  Giải pháp retrieval miss:
+    1. Cải thiện embedding quality (bge-m3 thay bge-large-en)
+    2. Overlap domain clusters (refunds xuất hiện trong cả 2 clusters)
+    3. Multi-cluster retrieval (top-2 clusters thay vì top-1)
+    4. User feedback loop (sai → user sửa → update embeddings)
+```
+
+### 8.4 Inter-agent Contract — Nguyên tắc thiết kế
+
+Để multi-agent KHÔNG tăng hallucination, tuân thủ 3 nguyên tắc:
+
+| # | Nguyên tắc | Mô tả | Vi phạm → hậu quả |
+|---|-----------|-------|---------------------|
+| **1** | **Structured over Natural Language** | Inter-agent messages phải là JSON/typed objects, KHÔNG phải natural language | NL truyền giữa agents → mỗi agent diễn giải khác nhau → drift |
+| **2** | **Complete Context Package** | Linker phải truyền ĐẦY ĐỦ: tables + JOINs + metrics + examples + enums | Thiếu JOIN path → Generator phải đoán → hallucinate |
+| **3** | **Deterministic before Generative** | Linker (retrieval, lookup) chạy TRƯỚC Generator (LLM) | LLM phải vừa retrieve vừa generate → overload → hallucinate |
+
+---
+
+## 9. SEMANTIC LAYER — YÊU CẦU CHI TIẾT
+
+### 9.1 Tổng quan
+
+Semantic Layer là **nguồn tri thức nghiệp vụ** cho toàn bộ hệ thống. Nó bridge giữa ngôn ngữ business và cấu trúc database. Cần chứa **7 loại thông tin**:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      SEMANTIC LAYER                              │
+│                                                                  │
+│   ① Metric Definitions        ⑤ Sensitive Columns               │
+│   ② Dimension Mappings        ⑥ Column Value Enums              │
+│   ③ Table/Column Aliases      ⑦ Business Rules & Disambiguation │
+│   ④ JOIN Graph                                                   │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 9.2 Chi tiết từng loại thông tin
+
+#### ① Metric Definitions — Business term → SQL expression
+
+**Mục đích:** Đảm bảo "doanh thu" luôn được translate thành cùng 1 SQL expression, bất kể LLM nào generate.
+
+```json
+{
+  "metrics": {
+    "doanh_thu": {
+      "aliases": ["revenue", "doanh thu", "doanh số", "total sales", "tổng doanh thu"],
+      "sql": "SUM(sales.total_amount)",
+      "filters": "sales.status = 'completed'",
+      "tables": ["sales"],
+      "note": "Chỉ tính giao dịch completed, KHÔNG tính pending/failed/reversed"
+    },
+    "ti_le_hoan_tien": {
+      "aliases": ["refund rate", "tỷ lệ hoàn tiền", "tỷ lệ refund"],
+      "sql": "COUNT(refunds.id)::decimal / NULLIF(COUNT(DISTINCT sales.id), 0)",
+      "tables": ["sales", "refunds"],
+      "join": "LEFT JOIN refunds ON refunds.sale_id = sales.id",
+      "note": "LEFT JOIN vì không phải sale nào cũng có refund. NULLIF tránh division by zero"
+    },
+    "khach_hang_moi": {
+      "aliases": ["new customers", "khách hàng mới", "khách mới", "onboarded"],
+      "sql": "COUNT(*)",
+      "tables": ["customers"],
+      "filters": "customers.created_at IN <period>",
+      "note": "Tính theo created_at, KHÔNG phải kyc_status"
+    },
+    "so_du_tai_khoan": {
+      "aliases": ["account balance", "số dư", "balance", "tổng số dư"],
+      "sql": "accounts.balance",
+      "tables": ["accounts"],
+      "note": "balance là snapshot hiện tại, KHÔNG phải SUM(transactions)"
+    },
+    "so_giao_dich": {
+      "aliases": ["transaction count", "số giao dịch", "số lượng giao dịch"],
+      "sql": "COUNT(sales.id)",
+      "tables": ["sales"],
+      "filters": "sales.status = 'completed'",
+      "note": "Mặc định đếm sales. Nếu user nói 'chuyển khoản' thì đếm transfers"
+    },
+    "gia_tri_trung_binh": {
+      "aliases": ["average transaction", "giá trị trung bình", "avg transaction value", "ATV"],
+      "sql": "AVG(sales.total_amount)",
+      "tables": ["sales"],
+      "filters": "sales.status = 'completed'"
+    }
+  }
+}
+```
+
+**Tại sao quan trọng:** Nếu không có metric definition, LLM có thể sinh:
+- `SUM(sales.total_amount)` (thiếu WHERE status = 'completed') → đếm cả giao dịch fail
+- `SUM(sales.amount)` → column không tồn tại (hallucination)
+- `COUNT(sales.*)` → hiểu sai "doanh thu" thành "số lượng"
+
+#### ② Dimension Mappings — Time/category expressions → SQL filters
+
+**Mục đích:** Standardize cách diễn đạt thời gian và phân loại trong tiếng Việt/Anh.
+
+```json
+{
+  "dimensions": {
+    "time": {
+      "tháng trước": {
+        "sql_start": "DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')",
+        "sql_end": "DATE_TRUNC('month', CURRENT_DATE)",
+        "pattern": "<time_column> >= {start} AND <time_column> < {end}"
+      },
+      "quý trước": {
+        "sql_start": "DATE_TRUNC('quarter', CURRENT_DATE - INTERVAL '1 quarter')",
+        "sql_end": "DATE_TRUNC('quarter', CURRENT_DATE)",
+        "pattern": "<time_column> >= {start} AND <time_column> < {end}"
+      },
+      "năm nay": {
+        "sql_start": "DATE_TRUNC('year', CURRENT_DATE)",
+        "sql_end": "CURRENT_DATE",
+        "pattern": "<time_column> >= {start} AND <time_column> <= {end}"
+      },
+      "7 ngày gần nhất": {
+        "sql_start": "CURRENT_DATE - INTERVAL '7 days'",
+        "sql_end": "CURRENT_DATE",
+        "pattern": "<time_column> >= {start}"
+      },
+      "hôm nay": {
+        "sql_start": "CURRENT_DATE",
+        "sql_end": "CURRENT_DATE + INTERVAL '1 day'",
+        "pattern": "<time_column> >= {start} AND <time_column> < {end}"
+      }
+    },
+    "default_time_column_per_table": {
+      "sales": "sale_time",
+      "customers": "created_at",
+      "accounts": "opened_at",
+      "transfers": "transferred_at",
+      "refunds": "refunded_at",
+      "employees": "hired_at"
+    }
+  }
+}
+```
+
+**Tại sao quan trọng:** "Tháng trước" có thể hiểu là:
+- Calendar month trước (March → February) ← **đúng**
+- 30 ngày gần nhất ← sai
+- Khoảng từ ngày 1 đến 30 tháng trước ← mơ hồ
+
+#### ③ Table/Column Aliases — Vietnamese terms → schema names
+
+**Mục đích:** Map ngôn ngữ tự nhiên tiếng Việt vào tên bảng/cột trong database.
+
+```json
+{
+  "aliases": {
+    "tables": {
+      "chi nhánh": "branches",
+      "nhân viên": "employees",
+      "khách hàng": "customers",
+      "tài khoản": "accounts",
+      "thẻ": "cards",
+      "đơn vị chấp nhận thẻ": "merchants",
+      "cửa hàng": "merchants",
+      "máy POS": "terminals",
+      "sản phẩm": "products",
+      "giao dịch": "sales",
+      "giao dịch bán hàng": "sales",
+      "hoàn tiền": "refunds",
+      "chuyển khoản": "transfers",
+      "sao kê": "statements",
+      "nhật ký": "audit_logs"
+    },
+    "columns": {
+      "tên": ["*.name", "*.first_name", "*.last_name"],
+      "trạng thái": ["*.status", "customers.kyc_status"],
+      "ngày tạo": ["*.created_at"],
+      "số dư": ["accounts.balance"],
+      "loại tài khoản": ["accounts.account_type"],
+      "loại thẻ": ["cards.card_type"],
+      "mạng thẻ": ["cards.network"],
+      "mã danh mục": ["merchants.mcc"]
+    }
+  }
+}
+```
+
+#### ④ JOIN Graph — Relationship Map
+
+**Mục đích:** Cung cấp adjacency list đầy đủ để Linker biết cách nối bảng.
+
+```json
+{
+  "join_graph": {
+    "edges": [
+      {"from": "employees.branch_id",    "to": "branches.id",    "type": "many-to-one"},
+      {"from": "accounts.customer_id",   "to": "customers.id",   "type": "many-to-one"},
+      {"from": "cards.account_id",       "to": "accounts.id",    "type": "many-to-one"},
+      {"from": "terminals.merchant_id",  "to": "merchants.id",   "type": "many-to-one"},
+      {"from": "sales.merchant_id",      "to": "merchants.id",   "type": "many-to-one"},
+      {"from": "sales.terminal_id",      "to": "terminals.id",   "type": "many-to-one"},
+      {"from": "sales.product_id",       "to": "products.id",    "type": "many-to-one"},
+      {"from": "sales.card_id",          "to": "cards.id",       "type": "many-to-one"},
+      {"from": "refunds.sale_id",        "to": "sales.id",       "type": "many-to-one"},
+      {"from": "transfers.from_account", "to": "accounts.id",    "type": "many-to-one", "role": "sender"},
+      {"from": "transfers.to_account",   "to": "accounts.id",    "type": "many-to-one", "role": "receiver"},
+      {"from": "statements.account_id",  "to": "accounts.id",    "type": "many-to-one"}
+    ],
+    "domain_clusters": {
+      "customer_profile": {
+        "tables": ["customers", "accounts", "cards"],
+        "description": "Customer identity, accounts, and card management",
+        "use_cases": ["KYC queries", "balance inquiry", "card status", "customer onboarding"]
+      },
+      "transaction_analytics": {
+        "tables": ["sales", "merchants", "terminals", "products", "cards"],
+        "description": "Sales transactions and merchant performance",
+        "use_cases": ["revenue analysis", "product performance", "merchant ranking", "card network usage"]
+      },
+      "refund_analysis": {
+        "tables": ["refunds", "sales", "merchants"],
+        "description": "Refund patterns and merchant quality",
+        "use_cases": ["refund rate", "refund reasons", "merchant quality scoring"]
+      },
+      "transfer_analytics": {
+        "tables": ["transfers", "accounts", "customers"],
+        "description": "Fund transfers between accounts",
+        "use_cases": ["self-transfer detection", "transfer volume", "fraud patterns"]
+      },
+      "hr_branch": {
+        "tables": ["branches", "employees"],
+        "description": "Branch operations and HR",
+        "use_cases": ["employee count", "branch performance", "hiring trends"]
+      },
+      "audit_compliance": {
+        "tables": ["audit_logs"],
+        "description": "System audit trail",
+        "use_cases": ["action frequency", "compliance investigation", "user activity"]
+      },
+      "account_statements": {
+        "tables": ["statements", "accounts"],
+        "description": "Periodic account statements",
+        "use_cases": ["balance changes", "statement frequency"]
+      }
+    }
+  }
+}
+```
+
+#### ⑤ Sensitive Columns — Danh sách cột phải bảo vệ
+
+**Mục đích:** Ngăn chặn data breach qua SQL query.
+
+```json
+{
+  "sensitive_columns": {
+    "blocked": {
+      "description": "KHÔNG BAO GIỜ được xuất hiện trong SELECT hoặc WHERE",
+      "columns": ["cards.cvv", "cards.card_number"]
+    },
+    "masked": {
+      "description": "Được phép query nhưng phải mask trong kết quả",
+      "rules": {
+        "customers.email": "LEFT(email, 3) || '***@' || SPLIT_PART(email, '@', 2)",
+        "customers.phone": "'***' || RIGHT(phone, 4)"
+      }
+    },
+    "audit_logged": {
+      "description": "Được phép query nhưng phải ghi audit log",
+      "columns": ["customers.dob", "accounts.account_number", "accounts.balance"]
+    }
+  }
+}
+```
+
+#### ⑥ Column Value Enums — Giá trị hợp lệ cho categorical columns
+
+**Mục đích:** Ngăn LLM bịa giá trị không tồn tại.
+
+```json
+{
+  "column_enums": {
+    "customers.kyc_status": {
+      "values": ["unverified", "pending", "verified", "rejected"],
+      "description": "KYC verification status",
+      "note": "Case-sensitive, lowercase"
+    },
+    "accounts.account_type": {
+      "values": ["checking", "savings", "credit"],
+      "description": "Type of bank account"
+    },
+    "accounts.status": {
+      "values": ["open", "closed", "frozen"],
+      "description": "Current account status"
+    },
+    "cards.card_type": {
+      "values": ["debit", "credit", "prepaid"],
+      "description": "Type of payment card"
+    },
+    "cards.network": {
+      "values": ["VISA", "MasterCard", "AMEX"],
+      "description": "Payment network",
+      "note": "Case-sensitive: VISA (uppercase), MasterCard (CamelCase)"
+    },
+    "cards.status": {
+      "values": ["active", "blocked", "expired"],
+      "description": "Current card status"
+    },
+    "sales.status": {
+      "values": ["completed", "pending", "failed", "reversed"],
+      "description": "Transaction status"
+    },
+    "employees.role": {
+      "values": ["teller", "manager", "officer", "analyst"],
+      "description": "Job role"
+    }
+  }
+}
+```
+
+**Tại sao ⑥ Enums cực kỳ quan trọng:**
+
+```
+KHÔNG CÓ ENUM → LLM đoán:
+  "Khách hàng đã xác minh" → WHERE kyc_status = 'approved'     ← SAI (không tồn tại)
+  "Thẻ VISA"               → WHERE network = 'visa'            ← SAI (phải là 'VISA')
+  "Giao dịch thành công"   → WHERE status = 'success'          ← SAI (phải là 'completed')
+
+CÓ ENUM → LLM biết chính xác:
+  kyc_status IN ('unverified','pending','verified','rejected')
+  → Chắc chắn sinh: WHERE kyc_status = 'verified'
+
+  network IN ('VISA','MasterCard','AMEX')
+  → Chắc chắn sinh: WHERE network = 'VISA'
+```
+
+#### ⑦ Business Rules & Disambiguation
+
+**Mục đích:** Xử lý các trường hợp mơ hồ và quy tắc nghiệp vụ đặc thù.
+
+```json
+{
+  "business_rules": [
+    {
+      "rule": "Doanh thu chỉ tính giao dịch completed",
+      "applies_to": "metric:doanh_thu",
+      "reason": "pending/failed/reversed không phải revenue thực tế"
+    },
+    {
+      "rule": "Khách hàng mới tính theo created_at, KHÔNG phải kyc_status",
+      "applies_to": "metric:khach_hang_moi",
+      "reason": "kyc_status='unverified' có thể là khách cũ chưa verify, không phải khách mới"
+    },
+    {
+      "rule": "accounts.balance là snapshot hiện tại",
+      "applies_to": "column:accounts.balance",
+      "reason": "KHÔNG dùng SUM(transactions) để tính balance, vì balance đã là giá trị cập nhật"
+    },
+    {
+      "rule": "Refund rate dùng LEFT JOIN",
+      "applies_to": "metric:ti_le_hoan_tien",
+      "reason": "INNER JOIN sẽ loại bỏ sales không có refund → tỷ lệ bị sai (luôn = 100%)"
+    }
+  ],
+  "disambiguation": [
+    {
+      "term": "giao dịch",
+      "options": [
+        {"meaning": "Sales transactions (POS)", "table": "sales", "default": true},
+        {"meaning": "Fund transfers", "table": "transfers", "default": false}
+      ],
+      "resolution": "Mặc định là sales. Nếu user nói 'chuyển khoản', 'chuyển tiền' → dùng transfers. Nếu mơ hồ → hỏi lại."
+    },
+    {
+      "term": "số lượng",
+      "options": [
+        {"meaning": "COUNT(*) — đếm số records", "default": true},
+        {"meaning": "SUM(quantity) — tổng số lượng sản phẩm", "default": false}
+      ],
+      "resolution": "Mặc định là COUNT. Nếu context là 'sản phẩm bán được bao nhiêu' → SUM(quantity)."
+    },
+    {
+      "term": "active/inactive",
+      "options": [
+        {"meaning": "Có giao dịch trong 90 ngày gần nhất", "default": true},
+        {"meaning": "accounts.status = 'open'", "default": false}
+      ],
+      "resolution": "Mặc định là có/không giao dịch. Nếu user hỏi 'trạng thái tài khoản' → dùng accounts.status."
+    }
+  ]
+}
+```
+
+### 9.3 Semantic Layer — Tóm tắt
+
+| # | Loại thông tin | Nguồn | Tần suất cập nhật |
+|---|---------------|-------|-------------------|
+| ① | Metric Definitions | Domain expert define | Khi thêm metric mới hoặc logic thay đổi |
+| ② | Dimension Mappings | Domain expert define | Ít thay đổi (time patterns ổn định) |
+| ③ | Table/Column Aliases | Domain expert define | Khi thêm bảng mới |
+| ④ | JOIN Graph | Auto-detect + expert enrich | Khi schema thay đổi (migration) |
+| ⑤ | Sensitive Columns | Security/Compliance team | Khi policy thay đổi |
+| ⑥ | Column Value Enums | Auto-detect từ DB (DISTINCT) + expert validate | Khi thêm enum value mới |
+| ⑦ | Business Rules | Domain expert define | Khi quy tắc nghiệp vụ thay đổi |
+
+**⑥ Column Value Enums có thể semi-auto detect:**
+
+```sql
+-- Auto-detect enum values từ DB
+SELECT DISTINCT kyc_status FROM customers;      -- → ['unverified','pending','verified','rejected']
+SELECT DISTINCT account_type FROM accounts;     -- → ['checking','savings','credit']
+SELECT DISTINCT network FROM cards;             -- → ['VISA','MasterCard','AMEX']
+
+-- Chỉ áp dụng cho columns có cardinality thấp (< 20 distinct values)
+-- Domain expert review và confirm trước khi đưa vào semantic layer
+```
+
+---
+
+*Tài liệu Solution Suggestion v1.1 — Cập nhật phân tích Scale-up, Linker Relationships, Multi-Agent Hallucination, Semantic Layer Requirements*
+*Ngày tạo: 25/03/2026 | Cập nhật: 25/03/2026*
 *Phần tiếp theo: [Architecture Design](./architecture_design.md) — Chi tiết thiết kế từng component*
