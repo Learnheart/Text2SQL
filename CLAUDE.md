@@ -141,6 +141,27 @@ Sau khi hoàn thành code (bao gồm cả test), bắt buộc phải khai báo:
 
 ---
 
+### Rule 6: Auto Commit & Push — Tự động commit + push khi thay đổi có ý nghĩa
+
+**Tự động commit + push** (không cần hỏi) khi thay đổi thuộc các loại sau:
+
+- Thay đổi **logic**: thêm/sửa/xoá function, class, module
+- Thay đổi **tài liệu kiến trúc**: design docs, architecture flows, component specs
+- Thay đổi **data model / interface / contract**: schemas, API contracts, tool definitions
+- Thay đổi **cấu trúc project**: di chuyển file, tổ chức lại folder
+- Thêm/sửa **tests** đi kèm với thay đổi logic
+
+**KHÔNG cần commit** cho các thay đổi nhỏ không ảnh hưởng kiến trúc:
+
+- Fix typo trong comment/docstring
+- Chỉnh formatting (whitespace, line breaks)
+- Debug nhỏ trong quá trình phát triển (sẽ gộp vào commit logic)
+- Thay đổi tạm thời để test
+
+**Quy tắc commit message:** Mô tả ngắn gọn thay đổi chính, focus vào "why" không phải "what".
+
+---
+
 ## WORKFLOW TÓM TẮT
 
 ```
@@ -166,4 +187,7 @@ Nhận yêu cầu
     │
     ▼
 [5] Báo cáo thay đổi (Rule 5)
+    │
+    ▼
+[6] Auto commit + push nếu thay đổi có ý nghĩa (Rule 6)
 ```
