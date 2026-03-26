@@ -14,10 +14,10 @@ Each pattern is a self-contained project in its own folder, representing a diffe
 
 ### Pattern 1 — RAG Single Agent (Phase 1)
 
-Single Claude agent with 4 tools + RAG context injection. Simple, fast to build.
+Single LLM agent with 4 tools + RAG context injection. Simple, fast to build.
 
 ```
-Question → RAG Retrieval → Claude Agent (tool use loop) → SQL + Results
+Question → RAG Retrieval → LLM Agent (tool use loop) → SQL + Results
 ```
 
 ### Pattern 2 — LLM Pipeline (Phase 2)
@@ -49,7 +49,7 @@ Detailed design docs for all 3 patterns: [`docs/03_Technical_Assessment/`](docs/
 
 ## Tech Stack
 
-- **LLM:** Claude Sonnet 4.6 (Anthropic API)
+- **LLM:** Multi-provider (Anthropic, OpenAI, Groq, Ollama, vLLM)
 - **Database:** PostgreSQL 18 + pgvector
 - **Language:** Python 3.11+
 - **API:** FastAPI

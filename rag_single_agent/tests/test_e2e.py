@@ -1,4 +1,4 @@
-"""End-to-end integration tests — real Claude API + real DB.
+"""End-to-end integration tests — real LLM API + real DB.
 
 These tests are marked with @pytest.mark.e2e and skipped by default.
 Run with:  pytest -m e2e --run-e2e

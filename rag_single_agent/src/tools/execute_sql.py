@@ -62,7 +62,7 @@ async def execute_sql(sql: str, pool: DatabasePool) -> dict:
     return result
 
 
-# Claude tool definition
+# LLM tool definition
 TOOL_DEFINITION = {
     "name": "execute_sql",
     "description": (

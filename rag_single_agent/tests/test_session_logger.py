@@ -103,7 +103,7 @@ class TestSessionLogger:
         log.detail("RAG_RETRIEVAL", "Schema chunks: 5, Examples: 3, Metrics: 1")
         log.step(2, "PROMPT_BUILD", "Building system prompt")
         log.detail("PROMPT_BUILD", "System prompt length: 2000 chars")
-        log.step(3, "LLM_LOOP", "Starting Claude tool use loop")
+        log.step(3, "LLM_LOOP", "Starting LLM tool use loop")
         log.detail("LLM_CALL", "Iteration 1: stop_reason=tool_use, tokens=500")
         log.detail("TOOL_DISPATCH", "execute_sql → 42 rows")
         log.detail("LLM_CALL", "Iteration 2: stop_reason=end_turn, tokens=200")

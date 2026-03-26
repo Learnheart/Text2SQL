@@ -173,7 +173,7 @@ class TestQueryEndpoint:
     @pytest.mark.asyncio
     async def test_query_agent_error(self, mock_state):
         """POST /api/query when agent raises exception returns 500."""
-        mock_state.agent.run = AsyncMock(side_effect=RuntimeError("Claude API error"))
+        mock_state.agent.run = AsyncMock(side_effect=RuntimeError("LLM API error"))
 
         from contextlib import asynccontextmanager
         from fastapi import FastAPI

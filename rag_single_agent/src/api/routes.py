@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
+from src.config import settings
 from src.models.schemas import QueryRequest, QueryResponse, FeedbackRequest, AuditRecord
 from src.agent.response_parser import format_response_for_api
 from src.api.app import state
@@ -34,7 +35,7 @@ async def query(request: QueryRequest):
         latency_ms=agent_response.latency_ms,
         tool_calls_count=len(agent_response.tool_calls),
         tokens_used=agent_response.total_tokens,
-        model_used="claude-sonnet-4-6",
+        model_used=settings.llm_model,
     )
     await state.audit_logger.log(audit)
 
