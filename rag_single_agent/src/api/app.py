@@ -17,6 +17,7 @@ from src.knowledge.example_store import ExampleStore
 from src.rag.retrieval import RAGRetrieval
 from src.agent.prompt_builder import PromptBuilder
 from src.agent.agent import Agent
+from src.llm.factory import create_llm_provider
 
 
 class AppState:
@@ -46,6 +47,13 @@ async def lifespan(app: FastAPI):
     semantic_layer = SemanticLayer()
     example_store = ExampleStore()
 
+    # LLM provider
+    llm_provider = create_llm_provider(
+        provider=settings.llm_provider,
+        api_key=settings.resolved_api_key,
+        base_url=settings.resolved_base_url,
+    )
+
     # RAG + Agent
     rag_retrieval = RAGRetrieval(embedding_service, vector_store, semantic_layer, example_store)
     prompt_builder = PromptBuilder(semantic_layer, example_store)
@@ -57,6 +65,7 @@ async def lifespan(app: FastAPI):
         semantic_layer=semantic_layer,
         rag_retrieval=rag_retrieval,
         prompt_builder=prompt_builder,
+        llm_provider=llm_provider,
     )
 
     yield

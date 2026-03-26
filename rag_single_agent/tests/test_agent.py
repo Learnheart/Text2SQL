@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,29 +9,32 @@ import pytest
 from src.models.schemas import AgentResponse, RAGContext, MetricDef, Example, ToolCallRecord
 from src.agent.agent import Agent
 from src.agent.response_parser import format_response_for_api
+from src.llm.base import LLMResponse, ToolCall
 
 
 # ---------------------------------------------------------------------------
-# Helpers to build mock Claude API responses
+# Helpers to build mock LLM responses
 # ---------------------------------------------------------------------------
 
-def _text_block(text: str):
-    return SimpleNamespace(type="text", text=text)
+def _llm_text(text: str, tokens: int = 150) -> LLMResponse:
+    """Create an LLMResponse with text only (end_turn)."""
+    return LLMResponse(
+        text=text,
+        tool_calls=[],
+        stop_reason="end_turn",
+        input_tokens=tokens // 2,
+        output_tokens=tokens // 2,
+    )
 
 
-def _tool_use_block(tool_id: str, name: str, input_: dict):
-    return SimpleNamespace(type="tool_use", id=tool_id, name=name, input=input_)
-
-
-def _usage(inp: int = 100, out: int = 50):
-    return SimpleNamespace(input_tokens=inp, output_tokens=out)
-
-
-def _message(stop_reason: str, content: list, usage=None):
-    return SimpleNamespace(
-        stop_reason=stop_reason,
-        content=content,
-        usage=usage or _usage(),
+def _llm_tool_use(tool_calls: list[ToolCall], text: str | None = None, tokens: int = 150) -> LLMResponse:
+    """Create an LLMResponse with tool calls."""
+    return LLMResponse(
+        text=text,
+        tool_calls=tool_calls,
+        stop_reason="tool_use",
+        input_tokens=tokens // 2,
+        output_tokens=tokens // 2,
     )
 
 
@@ -58,6 +60,15 @@ def mock_deps():
     prompt_builder = MagicMock()
     prompt_builder.build.return_value = "You are a SQL agent..."
 
+    llm_provider = MagicMock()
+    # Default: format_tool_result returns Anthropic-style dict
+    llm_provider.format_tool_result.side_effect = lambda **kw: {
+        "type": "tool_result",
+        "tool_use_id": kw["tool_call_id"],
+        "content": kw["content"],
+    }
+    llm_provider.format_assistant_message.return_value = {"role": "assistant", "content": "..."}
+
     return {
         "db_pool": db_pool,
         "embedding_service": embedding_service,
@@ -65,17 +76,14 @@ def mock_deps():
         "semantic_layer": semantic_layer,
         "rag_retrieval": rag_retrieval,
         "prompt_builder": prompt_builder,
+        "llm_provider": llm_provider,
     }
 
 
 @pytest.fixture
 def agent(mock_deps):
-    """Create Agent with mocked deps and mocked Anthropic client."""
-    with patch("src.agent.agent.anthropic.Anthropic") as mock_cls:
-        a = Agent(**mock_deps)
-        # Expose the mock client for per-test configuration
-        a._mock_client = mock_cls.return_value
-        return a
+    """Create Agent with mocked deps and mocked LLM provider."""
+    return Agent(**mock_deps)
 
 
 # ---------------------------------------------------------------------------
@@ -86,24 +94,13 @@ class TestAgentHappyPath:
     @pytest.mark.asyncio
     async def test_single_tool_call_success(self, agent):
         """Question → execute_sql tool call → final response with results."""
-        # First API call: agent wants to call execute_sql
-        tool_call_response = _message(
-            stop_reason="tool_use",
-            content=[
-                _text_block("Let me query the database."),
-                _tool_use_block("tc_1", "execute_sql", {"sql": "SELECT SUM(total_amount) FROM sales"}),
-            ],
-        )
+        tool_call_resp = _llm_tool_use([
+            ToolCall(id="tc_1", name="execute_sql", input={"sql": "SELECT SUM(total_amount) FROM sales"}),
+        ], text="Let me query the database.")
+        final_resp = _llm_text("Total revenue is 1,000,000 VND.")
 
-        # Second API call: agent provides final answer
-        final_response = _message(
-            stop_reason="end_turn",
-            content=[_text_block("Total revenue is 1,000,000 VND.")],
-        )
+        agent._llm.create = MagicMock(side_effect=[tool_call_resp, final_resp])
 
-        agent._client.messages.create = MagicMock(side_effect=[tool_call_response, final_response])
-
-        # Mock execute_sql tool
         with patch("src.agent.agent.execute_sql", new_callable=AsyncMock) as mock_exec:
             mock_exec.return_value = {
                 "columns": ["sum"],
@@ -124,22 +121,12 @@ class TestAgentHappyPath:
     @pytest.mark.asyncio
     async def test_multi_tool_calls(self, agent):
         """Agent calls search_schema, then get_metric, then execute_sql."""
-        # Call 1: search_schema
-        resp1 = _message("tool_use", content=[
-            _tool_use_block("tc_1", "search_schema", {"query": "merchant tables"}),
-        ])
-        # Call 2: get_metric_definition
-        resp2 = _message("tool_use", content=[
-            _tool_use_block("tc_2", "get_metric_definition", {"metric_name": "doanh_thu"}),
-        ])
-        # Call 3: execute_sql
-        resp3 = _message("tool_use", content=[
-            _tool_use_block("tc_3", "execute_sql", {"sql": "SELECT SUM(total_amount) FROM sales"}),
-        ])
-        # Call 4: final answer
-        resp4 = _message("end_turn", content=[_text_block("Here are the results.")])
+        resp1 = _llm_tool_use([ToolCall(id="tc_1", name="search_schema", input={"query": "merchant tables"})])
+        resp2 = _llm_tool_use([ToolCall(id="tc_2", name="get_metric_definition", input={"metric_name": "doanh_thu"})])
+        resp3 = _llm_tool_use([ToolCall(id="tc_3", name="execute_sql", input={"sql": "SELECT SUM(total_amount) FROM sales"})])
+        resp4 = _llm_text("Here are the results.")
 
-        agent._client.messages.create = MagicMock(side_effect=[resp1, resp2, resp3, resp4])
+        agent._llm.create = MagicMock(side_effect=[resp1, resp2, resp3, resp4])
 
         with patch("src.agent.agent.search_schema", new_callable=AsyncMock) as mock_search, \
              patch("src.agent.agent.get_metric_definition", new_callable=AsyncMock) as mock_metric, \
@@ -165,10 +152,8 @@ class TestAgentOutOfScope:
     @pytest.mark.asyncio
     async def test_out_of_scope_question(self, agent):
         """Non-data question → agent responds without calling any tool."""
-        final = _message("end_turn", content=[
-            _text_block("Xin lỗi, tôi chỉ hỗ trợ câu hỏi về dữ liệu Banking/POS."),
-        ])
-        agent._client.messages.create = MagicMock(return_value=final)
+        final = _llm_text("Xin lỗi, tôi chỉ hỗ trợ câu hỏi về dữ liệu Banking/POS.")
+        agent._llm.create = MagicMock(return_value=final)
 
         result = await agent.run("Thời tiết hôm nay thế nào?")
 
@@ -181,10 +166,8 @@ class TestAgentOutOfScope:
     @pytest.mark.asyncio
     async def test_greeting(self, agent):
         """Greeting → friendly response, no tools."""
-        final = _message("end_turn", content=[
-            _text_block("Xin chào! Tôi có thể giúp bạn truy vấn dữ liệu Banking/POS."),
-        ])
-        agent._client.messages.create = MagicMock(return_value=final)
+        final = _llm_text("Xin chào! Tôi có thể giúp bạn truy vấn dữ liệu Banking/POS.")
+        agent._llm.create = MagicMock(return_value=final)
 
         result = await agent.run("Xin chào")
 
@@ -201,19 +184,15 @@ class TestAgentErrorRecovery:
     @pytest.mark.asyncio
     async def test_sql_error_then_retry(self, agent):
         """Agent generates bad SQL → gets error → retries with corrected SQL → success."""
-        # Call 1: agent tries bad SQL
-        resp1 = _message("tool_use", content=[
-            _tool_use_block("tc_1", "execute_sql", {"sql": "SELECT * FROM nonexistent_table"}),
+        resp1 = _llm_tool_use([
+            ToolCall(id="tc_1", name="execute_sql", input={"sql": "SELECT * FROM nonexistent_table"}),
         ])
-        # Call 2: agent retries with corrected SQL
-        resp2 = _message("tool_use", content=[
-            _text_block("The table doesn't exist. Let me use the correct table name."),
-            _tool_use_block("tc_2", "execute_sql", {"sql": "SELECT * FROM sales LIMIT 10"}),
-        ])
-        # Call 3: final answer
-        resp3 = _message("end_turn", content=[_text_block("Here are the sales records.")])
+        resp2 = _llm_tool_use([
+            ToolCall(id="tc_2", name="execute_sql", input={"sql": "SELECT * FROM sales LIMIT 10"}),
+        ], text="The table doesn't exist. Let me use the correct table name.")
+        resp3 = _llm_text("Here are the sales records.")
 
-        agent._client.messages.create = MagicMock(side_effect=[resp1, resp2, resp3])
+        agent._llm.create = MagicMock(side_effect=[resp1, resp2, resp3])
 
         call_count = 0
 
@@ -241,16 +220,13 @@ class TestAgentMaxToolCalls:
     @pytest.mark.asyncio
     async def test_max_tool_calls_reached(self, agent):
         """Agent keeps calling tools until hitting the limit."""
-        # Create a response that always wants another tool call
-        tool_response = _message("tool_use", content=[
-            _tool_use_block("tc_loop", "search_schema", {"query": "something"}),
+        tool_response = _llm_tool_use([
+            ToolCall(id="tc_loop", name="search_schema", input={"query": "something"}),
         ])
-        agent._client.messages.create = MagicMock(return_value=tool_response)
+        agent._llm.create = MagicMock(return_value=tool_response)
 
         with patch("src.agent.agent.search_schema", new_callable=AsyncMock) as mock_search:
             mock_search.return_value = {"results": []}
-            # Temporarily lower max tool calls for faster test
-            original = agent._client  # preserve ref
             with patch("src.config.settings.agent_max_tool_calls", 3):
                 result = await agent.run("Infinite loop question")
 
@@ -306,7 +282,7 @@ class TestDispatchTool:
 # ---------------------------------------------------------------------------
 
 class TestBuildResponse:
-    def test_success_response(self, agent):
+    def test_success_response(self):
         tool_calls = [
             ToolCallRecord(
                 tool_name="execute_sql",
@@ -314,8 +290,8 @@ class TestBuildResponse:
                 tool_output={"columns": ["?column?"], "rows": [[1]], "row_count": 1},
             )
         ]
-        msg = _message("end_turn", content=[_text_block("The result is 1.")])
-        result = agent._build_response(msg, tool_calls, total_tokens=200, elapsed=1500)
+        llm_resp = _llm_text("The result is 1.")
+        result = Agent._build_response(llm_resp, tool_calls, total_tokens=200, elapsed=1500)
 
         assert result.status == "success"
         assert result.sql == "SELECT 1"
@@ -324,15 +300,15 @@ class TestBuildResponse:
         assert result.total_tokens == 200
         assert result.latency_ms == 1500
 
-    def test_out_of_scope_response(self, agent):
-        msg = _message("end_turn", content=[_text_block("Sorry, I can only help with Banking/POS data.")])
-        result = agent._build_response(msg, [], total_tokens=100, elapsed=500)
+    def test_out_of_scope_response(self):
+        llm_resp = _llm_text("Sorry, I can only help with Banking/POS data.")
+        result = Agent._build_response(llm_resp, [], total_tokens=100, elapsed=500)
 
         assert result.status == "out_of_scope"
         assert result.sql is None
         assert result.results is None
 
-    def test_error_response_sql_but_no_results(self, agent):
+    def test_error_response_sql_but_no_results(self):
         tool_calls = [
             ToolCallRecord(
                 tool_name="execute_sql",
@@ -340,8 +316,8 @@ class TestBuildResponse:
                 tool_output={"error": "relation does not exist"},
             )
         ]
-        msg = _message("end_turn", content=[_text_block("I couldn't run the query.")])
-        result = agent._build_response(msg, tool_calls, total_tokens=150, elapsed=2000)
+        llm_resp = _llm_text("I couldn't run the query.")
+        result = Agent._build_response(llm_resp, tool_calls, total_tokens=150, elapsed=2000)
 
         assert result.status == "error"
         assert result.sql == "SELECT * FROM bad"

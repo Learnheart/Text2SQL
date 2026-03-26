@@ -12,11 +12,16 @@ class Settings(BaseSettings):
     db_max_pool: int = 5
     db_statement_timeout_ms: int = 30_000
 
-    # Claude API
-    anthropic_api_key: str = ""
-    llm_model: str = "claude-sonnet-4-6-20250514"
+    # LLM Provider
+    llm_provider: str = "anthropic"      # "anthropic" or "openai" (for Groq/Ollama/vLLM/OpenAI)
+    llm_api_key: str = ""                # API key for the provider
+    llm_base_url: str = ""               # Base URL override (e.g., Groq, Ollama, vLLM)
+    llm_model: str = "claude-sonnet-4-6"
     llm_max_tokens: int = 4096
     llm_temperature: float = 0.0
+
+    # Backward compat: ANTHROPIC_API_KEY still works
+    anthropic_api_key: str = ""
 
     # Embedding
     embedding_model: str = "BAAI/bge-large-en-v1.5"
@@ -31,6 +36,16 @@ class Settings(BaseSettings):
     # RAG
     rag_schema_top_k: int = 5
     rag_example_top_k: int = 3
+
+    @property
+    def resolved_api_key(self) -> str:
+        """Return llm_api_key, falling back to anthropic_api_key for backward compat."""
+        return self.llm_api_key or self.anthropic_api_key
+
+    @property
+    def resolved_base_url(self) -> str | None:
+        """Return base_url if set, else None."""
+        return self.llm_base_url or None
 
     @property
     def database_url(self) -> str:

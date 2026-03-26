@@ -9,6 +9,7 @@ description = "Text-to-SQL Agent Platform for Banking/POS"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.40",
+    "openai>=1.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "asyncpg>=0.29",

@@ -1,11 +1,9 @@
-"""Single LLM Agent — Claude native tool use loop."""
+"""Single LLM Agent — provider-agnostic tool use loop."""
 
 from __future__ import annotations
 
 import time
 from typing import Any
-
-import anthropic
 
 from src.config import settings
 from src.models.schemas import AgentResponse, ToolCallRecord, RAGContext
@@ -15,6 +13,7 @@ from src.data_access.connection import DatabasePool
 from src.knowledge.semantic_layer import SemanticLayer
 from src.knowledge.vector_store import VectorStore
 from src.rag.embedding import EmbeddingService
+from src.llm.base import LLMProvider, LLMResponse
 from src.session_logger import SessionLogger
 from src.tools.execute_sql import execute_sql, TOOL_DEFINITION as EXEC_SQL_DEF
 from src.tools.search_schema import search_schema, TOOL_DEFINITION as SEARCH_SCHEMA_DEF
@@ -25,7 +24,7 @@ ALL_TOOLS = [EXEC_SQL_DEF, SEARCH_SCHEMA_DEF, GET_METRIC_DEF, GET_COL_DEF]
 
 
 class Agent:
-    """RAG-Enhanced Single Agent using Claude native tool use."""
+    """RAG-Enhanced Single Agent using any LLM provider with tool use."""
 
     def __init__(
         self,
@@ -35,6 +34,7 @@ class Agent:
         semantic_layer: SemanticLayer,
         rag_retrieval: RAGRetrieval,
         prompt_builder: PromptBuilder,
+        llm_provider: LLMProvider,
     ) -> None:
         self._pool = db_pool
         self._embedder = embedding_service
@@ -42,10 +42,10 @@ class Agent:
         self._semantic_layer = semantic_layer
         self._rag = rag_retrieval
         self._prompt_builder = prompt_builder
-        self._client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        self._llm = llm_provider
 
     async def run(self, question: str, session_log: SessionLogger | None = None) -> AgentResponse:
-        """Run the agent: RAG → build prompt → Claude tool use loop → response."""
+        """Run the agent: RAG → build prompt → LLM tool use loop → response."""
         start = time.perf_counter()
         tool_call_records: list[ToolCallRecord] = []
         total_tokens = 0
@@ -66,70 +66,75 @@ class Agent:
         system_prompt = self._prompt_builder.build(rag_context)
         log.detail("PROMPT_BUILD", f"System prompt length: {len(system_prompt)} chars")
 
-        # --- Step 3: Claude tool use loop ---
-        log.step(3, "LLM_LOOP", "Starting Claude tool use loop")
+        # --- Step 3: LLM tool use loop ---
+        log.step(3, "LLM_LOOP", f"Starting tool use loop (provider={settings.llm_provider}, model={settings.llm_model})")
         messages: list[dict[str, Any]] = [{"role": "user", "content": question}]
         iteration = 0
 
         for _ in range(settings.agent_max_tool_calls):
             iteration += 1
             llm_start = time.perf_counter()
-            response = self._client.messages.create(
-                model=settings.llm_model,
-                max_tokens=settings.llm_max_tokens,
-                temperature=settings.llm_temperature,
+
+            llm_response: LLMResponse = self._llm.create(
                 system=system_prompt,
                 messages=messages,
                 tools=ALL_TOOLS,
+                model=settings.llm_model,
+                max_tokens=settings.llm_max_tokens,
+                temperature=settings.llm_temperature,
             )
+
             llm_ms = int((time.perf_counter() - llm_start) * 1000)
-            turn_tokens = response.usage.input_tokens + response.usage.output_tokens
-            total_tokens += turn_tokens
+            total_tokens += llm_response.total_tokens
 
             log.detail(
                 "LLM_CALL",
-                f"Iteration {iteration}: stop_reason={response.stop_reason}, "
-                f"tokens={turn_tokens} ({llm_ms}ms)",
+                f"Iteration {iteration}: stop_reason={llm_response.stop_reason}, "
+                f"tokens={llm_response.total_tokens} ({llm_ms}ms)",
             )
 
             # Check if agent wants to call tools
-            if response.stop_reason == "tool_use":
-                # Append assistant response
-                messages.append({"role": "assistant", "content": response.content})
+            if llm_response.has_tool_calls:
+                # Append assistant response (provider-specific format)
+                messages.append(
+                    self._llm.format_assistant_message(self._llm.last_raw_response)
+                )
 
                 # Process tool calls
                 tool_results: list[dict] = []
-                for block in response.content:
-                    if block.type == "tool_use":
-                        tool_input_summary = str(block.input)[:200]
-                        log.detail("TOOL_DISPATCH", f"{block.name} → input: {tool_input_summary}")
+                for tc in llm_response.tool_calls:
+                    tool_input_summary = str(tc.input)[:200]
+                    log.detail("TOOL_DISPATCH", f"{tc.name} → input: {tool_input_summary}")
 
-                        tool_start = time.perf_counter()
-                        result = await self._dispatch_tool(block.name, block.input)
-                        tool_ms = int((time.perf_counter() - tool_start) * 1000)
+                    tool_start = time.perf_counter()
+                    result = await self._dispatch_tool(tc.name, tc.input)
+                    tool_ms = int((time.perf_counter() - tool_start) * 1000)
 
-                        tool_call_records.append(
-                            ToolCallRecord(
-                                tool_name=block.name,
-                                tool_input=block.input,
-                                tool_output=result,
-                            )
+                    tool_call_records.append(
+                        ToolCallRecord(
+                            tool_name=tc.name,
+                            tool_input=tc.input,
+                            tool_output=result,
                         )
+                    )
 
-                        result_summary = self._summarize_tool_result(block.name, result)
-                        log.detail("TOOL_RESULT", f"{block.name} → {result_summary} ({tool_ms}ms)")
+                    result_summary = self._summarize_tool_result(tc.name, result)
+                    log.detail("TOOL_RESULT", f"{tc.name} → {result_summary} ({tool_ms}ms)")
 
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": str(result),
-                        })
+                    tool_results.append(
+                        self._llm.format_tool_result(
+                            tool_call_id=tc.id,
+                            content=str(result),
+                        )
+                    )
 
                 messages.append({"role": "user", "content": tool_results})
             else:
                 # Agent is done — extract final response
                 elapsed = int((time.perf_counter() - start) * 1000)
-                agent_response = self._build_response(response, tool_call_records, total_tokens, elapsed)
+                agent_response = self._build_response(
+                    llm_response, tool_call_records, total_tokens, elapsed
+                )
 
                 # --- Step 4: Response ---
                 log.step(4, "RESPONSE", f"status={agent_response.status}, sql={'yes' if agent_response.sql else 'no'}")
@@ -198,17 +203,15 @@ class Agent:
             return f"{result.get('count', 0)} distinct values"
         return str(result)[:100]
 
+    @staticmethod
     def _build_response(
-        self,
-        response: anthropic.types.Message,
+        llm_response: LLMResponse,
         tool_calls: list[ToolCallRecord],
         total_tokens: int,
         elapsed: int,
     ) -> AgentResponse:
-        """Extract structured response from Claude's final message."""
-        # Get text content
-        text_parts = [block.text for block in response.content if block.type == "text"]
-        full_text = "\n".join(text_parts)
+        """Extract structured response from the LLM's final message."""
+        full_text = llm_response.text or ""
 
         # Extract SQL from tool calls
         sql = None

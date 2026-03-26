@@ -21,9 +21,10 @@ User Question (Vietnamese/English)
     |-- System prompt + RAG context injected
     |
     v
-[Step 3] Claude Agent (tool use loop)
+[Step 3] LLM Agent (tool use loop) — provider-agnostic
     |-- Tools: execute_sql, search_schema, get_metric, get_column_values
     |-- ReAct loop: reason -> act -> observe -> repeat
+    |-- Supports: Claude, GPT-4o, Groq, Ollama, vLLM
     |
     v
 [Step 4] Response
@@ -39,7 +40,7 @@ User Question (Vietnamese/English)
 
 | Component | Technology |
 |-----------|-----------|
-| LLM | Claude Sonnet 4.6 (Anthropic API, native tool use) |
+| LLM | Multi-provider: Claude, GPT-4o, Groq, Ollama, vLLM (pluggable via config) |
 | Embedding | SentenceTransformer (BAAI/bge-large-en-v1.5) |
 | Vector DB | ChromaDB (persistent) |
 | Database | PostgreSQL 18 + pgvector |
@@ -47,14 +48,29 @@ User Question (Vietnamese/English)
 | UI | Streamlit (POC) |
 | Language | Python 3.11+ |
 
+### Supported LLM Providers
+
+| Provider | `LLM_PROVIDER` | `LLM_BASE_URL` | Tool Use |
+|----------|----------------|-----------------|----------|
+| Anthropic (Claude) | `anthropic` | — | Native |
+| OpenAI (GPT-4o) | `openai` | — | Native |
+| Groq (Llama 3) | `openai` | `https://api.groq.com/openai/v1` | Native |
+| Ollama (local) | `openai` | `http://localhost:11434/v1` | Model-dependent |
+| vLLM (self-hosted) | `openai` | `http://localhost:8000/v1` | Model-dependent |
+
 ## Project Structure
 
 ```
 src/
 ├── agent/               # LLM agent with tool use loop
-│   ├── agent.py         # Core agent: RAG -> prompt -> Claude loop -> response
+│   ├── agent.py         # Core agent: RAG -> prompt -> LLM loop -> response
 │   ├── prompt_builder.py
 │   └── response_parser.py
+├── llm/                 # LLM provider abstraction (Strategy pattern)
+│   ├── base.py          # LLMProvider ABC, LLMResponse, ToolCall
+│   ├── anthropic_provider.py    # Anthropic Claude
+│   ├── openai_compatible_provider.py  # OpenAI / Groq / Ollama / vLLM
+│   └── factory.py       # Factory: config -> provider instance
 ├── api/                 # REST API + WebSocket
 │   ├── app.py           # FastAPI with lifespan
 │   ├── routes.py        # POST /api/query, GET /api/health, POST /api/feedback
@@ -79,7 +95,7 @@ src/
 ├── config.py            # Settings (env-based)
 └── session_logger.py    # Per-session file logging for tracing
 
-tests/                   # 84 tests (unit + E2E)
+tests/                   # 92 tests (unit + E2E)
 config/                  # Semantic layer YAML, golden queries JSON, prompts
 data/                    # Schema metadata, sample queries
 ui/                      # Streamlit chat UI
@@ -93,7 +109,7 @@ docker/                  # PostgreSQL + pgvector
 
 - Python 3.11+
 - Docker Desktop (for PostgreSQL)
-- Anthropic API key
+- LLM API key (Anthropic, OpenAI, Groq, or local Ollama/vLLM)
 
 ### 1. Install dependencies
 
@@ -111,14 +127,31 @@ docker compose up -d
 
 ### 3. Configure environment
 
-Edit `.env`:
+Edit `.env` — choose your LLM provider:
 ```env
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=test_db
 DB_USER=test_db_user
 DB_PASSWORD=test_db_password
-ANTHROPIC_API_KEY=sk-ant-your-key-here
+
+# Option 1: Anthropic Claude (default)
+LLM_PROVIDER=anthropic
+LLM_API_KEY=sk-ant-your-key-here
+LLM_MODEL=claude-sonnet-4-6
+
+# Option 2: Groq (fast, free tier available)
+# LLM_PROVIDER=openai
+# LLM_API_KEY=gsk_your_groq_key
+# LLM_BASE_URL=https://api.groq.com/openai/v1
+# LLM_MODEL=llama-3.3-70b-versatile
+
+# Option 3: Ollama (local, free)
+# LLM_PROVIDER=openai
+# LLM_API_KEY=ollama
+# LLM_BASE_URL=http://localhost:11434/v1
+# LLM_MODEL=llama3.1
+
 EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
 CHROMA_PERSIST_DIR=./chroma_db
 ```
