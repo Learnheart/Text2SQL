@@ -95,6 +95,10 @@ class OpenAICompatibleProvider(LLMProvider):
 
         return msg
 
+    def format_tool_results_message(self, tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """OpenAI/Groq: each tool result is a separate top-level message."""
+        return tool_results
+
     @property
     def last_raw_response(self) -> Any:
         return self._last_raw_response

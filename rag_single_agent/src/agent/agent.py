@@ -128,7 +128,7 @@ class Agent:
                         )
                     )
 
-                messages.append({"role": "user", "content": tool_results})
+                messages.extend(self._llm.format_tool_results_message(tool_results))
             else:
                 # Agent is done — extract final response
                 elapsed = int((time.perf_counter() - start) * 1000)

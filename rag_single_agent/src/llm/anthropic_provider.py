@@ -54,6 +54,10 @@ class AnthropicProvider(LLMProvider):
         """Anthropic format: {role: 'assistant', content: response.content}."""
         return {"role": "assistant", "content": raw_response.content}
 
+    def format_tool_results_message(self, tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Anthropic: single user message containing all tool_result blocks."""
+        return [{"role": "user", "content": tool_results}]
+
     @property
     def last_raw_response(self) -> Any:
         return self._last_raw_response

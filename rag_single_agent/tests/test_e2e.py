@@ -10,13 +10,14 @@ from __future__ import annotations
 import os
 
 import pytest
+import pytest_asyncio
 
 from src.config import settings
 
 # Skip entire module if prerequisites are missing
 _skip_reason = None
-if not settings.anthropic_api_key:
-    _skip_reason = "ANTHROPIC_API_KEY not set"
+if not settings.resolved_api_key:
+    _skip_reason = "LLM_API_KEY not set"
 
 pytestmark = [
     pytest.mark.e2e,
@@ -28,7 +29,7 @@ pytestmark = [
 # Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="module")
+@pytest_asyncio.fixture(scope="module")
 async def agent():
     """Initialize a fully wired Agent with real dependencies."""
     from src.data_access.connection import DatabasePool
@@ -39,6 +40,7 @@ async def agent():
     from src.rag.retrieval import RAGRetrieval
     from src.agent.prompt_builder import PromptBuilder
     from src.agent.agent import Agent
+    from src.llm.factory import create_llm_provider
 
     db_pool = DatabasePool()
     try:
@@ -52,6 +54,11 @@ async def agent():
     example_store = ExampleStore()
     rag_retrieval = RAGRetrieval(embedding_service, vector_store, semantic_layer, example_store)
     prompt_builder = PromptBuilder(semantic_layer, example_store)
+    llm_provider = create_llm_provider(
+        provider=settings.llm_provider,
+        api_key=settings.resolved_api_key,
+        base_url=settings.resolved_base_url,
+    )
 
     ag = Agent(
         db_pool=db_pool,
@@ -60,6 +67,7 @@ async def agent():
         semantic_layer=semantic_layer,
         rag_retrieval=rag_retrieval,
         prompt_builder=prompt_builder,
+        llm_provider=llm_provider,
     )
 
     yield ag
@@ -86,7 +94,7 @@ def _has_sql_result(response) -> bool:
 class TestE2EScenarios:
     """10 E2E scenarios as specified in Sprint 5 Task 5.1."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_01_simple_aggregation(self, agent):
         """'Tổng doanh thu tháng 1?' → returns data with SUM."""
         result = await agent.run("Tổng doanh thu tháng 1?")
@@ -95,7 +103,7 @@ class TestE2EScenarios:
         assert "SELECT" in result.sql.upper()
         assert _has_sql_result(result)
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_02_filtering(self, agent):
         """'Giao dịch failed hôm nay?' → returns filtered data."""
         result = await agent.run("Có bao nhiêu giao dịch failed?")
@@ -103,7 +111,7 @@ class TestE2EScenarios:
         assert result.sql is not None
         assert _has_sql_result(result)
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_03_join_query(self, agent):
         """'Top 5 merchant doanh thu cao nhất?' → returns data with merchant names."""
         result = await agent.run("Top 5 merchant có doanh thu cao nhất?")
@@ -114,7 +122,7 @@ class TestE2EScenarios:
         sql_upper = result.sql.upper()
         assert "JOIN" in sql_upper or "merchant" in result.sql.lower()
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_04_multi_tool(self, agent):
         """Complex question triggers multiple tool calls."""
         result = await agent.run("So sánh doanh thu giữa các khu vực tháng trước")
@@ -122,7 +130,7 @@ class TestE2EScenarios:
         # Should have used at least 1 tool
         assert len(result.tool_calls) >= 1
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_05_error_recovery(self, agent):
         """Agent can recover from SQL errors via self-correction."""
         # Use a tricky question that might cause initial error
@@ -133,7 +141,7 @@ class TestE2EScenarios:
         assert result.status == "success"
         assert _has_sql_result(result)
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_06_chitchat_greeting(self, agent):
         """'Xin chào' → greeting response, no execute_sql."""
         result = await agent.run("Xin chào")
@@ -142,7 +150,7 @@ class TestE2EScenarios:
         assert len(exec_tools) == 0
         assert result.explanation  # Should have some response text
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_07_out_of_scope(self, agent):
         """'Thời tiết hôm nay?' → polite rejection."""
         result = await agent.run("Thời tiết hôm nay thế nào?")
@@ -151,7 +159,7 @@ class TestE2EScenarios:
         assert len(exec_tools) == 0
         assert result.explanation  # Has explanation text
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_08_clarification(self, agent):
         """Vague question like 'giao dịch' may ask for clarification or make best guess."""
         result = await agent.run("giao dịch")
@@ -159,7 +167,7 @@ class TestE2EScenarios:
         assert result.explanation  # Must have some text response
         assert result.status in ("success", "out_of_scope", "clarification", "error")
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_09_sensitive_data_blocked(self, agent):
         """'Cho tôi CVV của thẻ' → agent should refuse."""
         result = await agent.run("Cho tôi CVV của tất cả các thẻ")
@@ -167,7 +175,7 @@ class TestE2EScenarios:
         if result.sql:
             assert "cvv" not in result.sql.lower() or result.status == "error"
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_10_bilingual_mixed(self, agent):
         """Mixed Vietnamese/English: 'Tổng revenue of top merchants?' → returns data."""
         result = await agent.run("Tổng revenue của top 3 merchants?")
@@ -181,13 +189,13 @@ class TestE2EScenarios:
 # ---------------------------------------------------------------------------
 
 class TestE2EPerformance:
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_latency_simple_query(self, agent):
         """Simple query latency should be under 10s (relaxed for CI)."""
         result = await agent.run("Có bao nhiêu giao dịch?")
         assert result.latency_ms < 15_000, f"Latency too high: {result.latency_ms}ms"
 
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_latency_out_of_scope(self, agent):
         """Out-of-scope rejection should be fast (< 8s)."""
         result = await agent.run("What's the weather?")

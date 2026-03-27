@@ -82,3 +82,12 @@ class LLMProvider(ABC):
         OpenAI ChatCompletion) that was used to build the LLMResponse.
         """
         ...
+
+    @abstractmethod
+    def format_tool_results_message(self, tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Package tool results into messages for the conversation history.
+
+        Anthropic: single user message with content = list of tool_result blocks.
+        OpenAI/Groq: list of separate role='tool' messages.
+        """
+        ...

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -44,7 +45,7 @@ class DatabasePool:
                 await conn.execute("SET default_transaction_read_only = on")
                 await conn.execute(f"SET statement_timeout = '{settings.db_statement_timeout_ms}'")
 
-                rows = await asyncpg.wait_for(conn.fetch(sql), timeout=timeout_s)
+                rows = await asyncio.wait_for(conn.fetch(sql), timeout=timeout_s)
 
                 columns = list(rows[0].keys()) if rows else []
                 data = [list(r.values()) for r in rows]

@@ -173,6 +173,21 @@ class TestAnthropicProvider:
         assert msg["role"] == "assistant"
         assert msg["content"] == mock_response.content
 
+    @patch("src.llm.anthropic_provider.anthropic.Anthropic")
+    def test_format_tool_results_message(self, mock_anthropic_cls):
+        from src.llm.anthropic_provider import AnthropicProvider
+
+        provider = AnthropicProvider(api_key="test")
+        tool_results = [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "result1"},
+            {"type": "tool_result", "tool_use_id": "t2", "content": "result2"},
+        ]
+        msgs = provider.format_tool_results_message(tool_results)
+
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "user"
+        assert msgs[0]["content"] == tool_results
+
 
 # --- OpenAICompatibleProvider tests ---
 
@@ -283,6 +298,22 @@ class TestOpenAICompatibleProvider:
             "tool_call_id": "call_1",
             "content": '{"rows": []}',
         }
+
+    @patch("src.llm.openai_compatible_provider.OpenAI")
+    def test_format_tool_results_message(self, mock_openai_cls):
+        from src.llm.openai_compatible_provider import OpenAICompatibleProvider
+
+        provider = OpenAICompatibleProvider(api_key="test")
+        tool_results = [
+            {"role": "tool", "tool_call_id": "c1", "content": "result1"},
+            {"role": "tool", "tool_call_id": "c2", "content": "result2"},
+        ]
+        msgs = provider.format_tool_results_message(tool_results)
+
+        assert len(msgs) == 2
+        assert msgs[0]["role"] == "tool"
+        assert msgs[1]["role"] == "tool"
+        assert msgs is tool_results
 
     @patch("src.llm.openai_compatible_provider.OpenAI")
     def test_base_url_passed(self, mock_openai_cls):
