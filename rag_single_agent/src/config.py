@@ -1,4 +1,7 @@
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
+
+load_dotenv()
 
 
 class Settings(BaseSettings):
@@ -55,7 +58,7 @@ class Settings(BaseSettings):
     def asyncpg_dsn(self) -> str:
         return self.database_url
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file_encoding": "utf-8"}
 
 
 settings = Settings()
