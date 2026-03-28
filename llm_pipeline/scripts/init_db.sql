@@ -51,7 +51,8 @@ BEGIN
 END $$;
 
 -- Grant read-only access
-GRANT CONNECT ON DATABASE test_db TO readonly_user;
+-- Grant connect on current database (dynamic to avoid hardcoded db name)
+DO $$ BEGIN EXECUTE format('GRANT CONNECT ON DATABASE %I TO readonly_user', current_database()); END $$;
 GRANT USAGE ON SCHEMA public TO readonly_user;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly_user;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO readonly_user;

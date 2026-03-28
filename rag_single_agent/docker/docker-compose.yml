@@ -1,18 +1,7 @@
-version: "3.8"
+# Infrastructure managed by Service Controller (sc)
+# Run: sc infra up postgres redis
+# Project namespace: text2sql (db: text2sql_db, redis db: 1)
 
-services:
-  postgres:
-    image: pgvector/pgvector:0.8.1-pg18-trixie
-    container_name: rag_postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: test_db_user
-      POSTGRES_PASSWORD: test_db_password
-      POSTGRES_DB: test_db
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-
-volumes:
-  pgdata:
+networks:
+  infra-net:
+    external: true
