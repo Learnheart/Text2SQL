@@ -141,7 +141,35 @@ Sau khi hoàn thành code (bao gồm cả test), bắt buộc phải khai báo:
 
 ---
 
-### Rule 6: Auto Commit & Push — Tự động commit + push khi thay đổi có ý nghĩa
+### Rule 6: Infra Check — Kiểm tra infrastructure trước khi chạy service
+
+**TRƯỚC KHI khởi động hoặc chạy bất kỳ service nào**, bắt buộc phải:
+
+1. **Chạy `sc infra list`** để kiểm tra danh sách infrastructure services đang được host
+2. **Đối chiếu** với danh sách infra mà service/task hiện tại cần (PostgreSQL, Redis, Milvus, Elasticsearch, MinIO...)
+3. **Nếu đủ** → tiếp tục chạy service bình thường
+4. **Nếu thiếu** → KHÔNG tự ý khởi động, mà **khai báo cho người dùng** danh sách infra còn thiếu theo format:
+
+```
+## Infrastructure còn thiếu
+
+Các service sau chưa được host trên Service Controller:
+
+| Service | Image cần dùng | Port | Mô tả |
+|---------|---------------|------|-------|
+| [tên] | [docker image] | [port:port] | [mục đích sử dụng] |
+```
+
+Sau đó yêu cầu người dùng thêm vào controller bằng `sc infra add` trước khi tiếp tục.
+
+**Lưu ý:**
+- Project `text2sql` đã đăng ký với namespace: db `text2sql_db`, redis db `1`, ports `8010-8019`
+- Kết nối từ host dùng `localhost`, từ Docker container dùng tên container (`infra-postgres`, `infra-redis`...)
+- File `.env` chứa connection strings — tham khảo `docs/integration_service_controll/` nếu cần cập nhật
+
+---
+
+### Rule 7: Auto Commit & Push — Tự động commit + push khi thay đổi có ý nghĩa
 
 **Tự động commit + push** (không cần hỏi) khi thay đổi thuộc các loại sau:
 
@@ -189,5 +217,10 @@ Nhận yêu cầu
 [5] Báo cáo thay đổi (Rule 5)
     │
     ▼
-[6] Auto commit + push nếu thay đổi có ý nghĩa (Rule 6)
+[6] Kiểm tra infra trước khi chạy service (Rule 6)
+    │
+    ├── Thiếu infra? → Khai báo danh sách, yêu cầu user thêm qua sc
+    │
+    ▼
+[7] Auto commit + push nếu thay đổi có ý nghĩa (Rule 7)
 ```
