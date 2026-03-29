@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     agent_max_tool_calls: int = 10
     agent_timeout_seconds: int = 60
 
+    # Log cleanup
+    log_retention_hours: int = 24
+
     # RAG
     rag_schema_top_k: int = 5
     rag_example_top_k: int = 3

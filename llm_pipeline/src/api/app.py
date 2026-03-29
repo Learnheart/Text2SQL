@@ -11,6 +11,7 @@ Initializes all dependencies on startup:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from fastapi import FastAPI
 
 from src.cache.redis_cache import RedisCache
 from src.config import settings
+from src.session_logger import cleanup_old_logs
 from src.data_access.audit import AuditLogger
 from src.data_access.connection import DatabasePool
 from src.knowledge.bootstrap import KnowledgeBase, bootstrap_knowledge
@@ -100,11 +102,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         tracer=tracer,
     )
 
+    # Log cleanup: run once at startup, then every hour
+    deleted = cleanup_old_logs(settings.log_retention_hours)
+    if deleted:
+        logger.info("Startup log cleanup: removed %d old log file(s)", deleted)
+
+    async def _periodic_log_cleanup() -> None:
+        while True:
+            await asyncio.sleep(3600)
+            n = cleanup_old_logs(settings.log_retention_hours)
+            if n:
+                logger.info("Periodic log cleanup: removed %d old log file(s)", n)
+
+    cleanup_task = asyncio.create_task(_periodic_log_cleanup())
+
     logger.info("Application initialized successfully")
 
     yield
 
     # Cleanup
+    cleanup_task.cancel()
     logger.info("Shutting down application...")
     tracer.shutdown()
     await cache.close()

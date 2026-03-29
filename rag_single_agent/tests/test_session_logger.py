@@ -2,11 +2,12 @@
 
 import os
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from src.session_logger import SessionLogger, LOG_DIR
+from src.session_logger import SessionLogger, LOG_DIR, cleanup_old_logs
 
 
 @pytest.fixture(autouse=True)
@@ -148,3 +149,63 @@ class TestSessionLogger:
 
         log.close()
         log.close()  # should not raise
+
+
+class TestCleanupOldLogs:
+    @pytest.fixture(autouse=True)
+    def _isolate_log_dir(self, tmp_path, monkeypatch):
+        """Point LOG_DIR to a temp directory so tests don't touch real logs."""
+        import src.session_logger as mod
+        monkeypatch.setattr(mod, "LOG_DIR", tmp_path)
+        self.log_dir = tmp_path
+
+    def _create_log(self, age_hours: int) -> Path:
+        ts = (datetime.now() - timedelta(hours=age_hours)).strftime("%Y%m%d_%H%M%S")
+        f = self.log_dir / f"session_aabbccddeeff_{ts}.log"
+        f.write_text("session log", encoding="utf-8")
+        return f
+
+    def test_deletes_old_files(self):
+        old_file = self._create_log(age_hours=25)
+
+        deleted = cleanup_old_logs(retention_hours=24)
+
+        assert deleted == 1
+        assert not old_file.exists()
+
+    def test_keeps_recent_files(self):
+        recent_file = self._create_log(age_hours=1)
+
+        deleted = cleanup_old_logs(retention_hours=24)
+
+        assert deleted == 0
+        assert recent_file.exists()
+
+    def test_ignores_non_matching_files(self):
+        other_file = self.log_dir / "random_notes.txt"
+        other_file.write_text("keep me", encoding="utf-8")
+
+        deleted = cleanup_old_logs(retention_hours=0)
+
+        assert deleted == 0
+        assert other_file.exists()
+
+    def test_returns_zero_when_no_log_dir(self, monkeypatch):
+        import src.session_logger as mod
+        monkeypatch.setattr(mod, "LOG_DIR", self.log_dir / "nonexistent")
+
+        assert cleanup_old_logs(retention_hours=0) == 0
+
+    def test_mixed_old_and_new(self):
+        old_file = self._create_log(age_hours=48)
+        new_file = self._create_log(age_hours=1)
+        # Need unique names — override new_file with different id
+        ts_new = (datetime.now() - timedelta(hours=1)).strftime("%Y%m%d_%H%M%S")
+        new_file = self.log_dir / f"session_112233445566_{ts_new}.log"
+        new_file.write_text("new", encoding="utf-8")
+
+        deleted = cleanup_old_logs(retention_hours=24)
+
+        assert deleted == 1
+        assert not old_file.exists()
+        assert new_file.exists()

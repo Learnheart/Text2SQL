@@ -3,13 +3,39 @@
 from __future__ import annotations
 
 import logging
-import os
+import re
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 LOG_DIR = Path("logs")
+
+# Pattern to extract timestamp from log filename: session_{id}_{YYYYMMDD_HHMMSS}.log
+_LOG_FILENAME_RE = re.compile(r"^session_[0-9a-f]+_(\d{8}_\d{6})\.log$")
+
+
+def cleanup_old_logs(retention_hours: int = 24) -> int:
+    """Delete session log files older than *retention_hours*. Returns count of deleted files."""
+    if not LOG_DIR.exists():
+        return 0
+
+    cutoff = datetime.now() - timedelta(hours=retention_hours)
+    deleted = 0
+
+    for path in LOG_DIR.glob("session_*.log"):
+        match = _LOG_FILENAME_RE.match(path.name)
+        if not match:
+            continue
+        try:
+            file_time = datetime.strptime(match.group(1), "%Y%m%d_%H%M%S")
+        except ValueError:
+            continue
+        if file_time < cutoff:
+            path.unlink(missing_ok=True)
+            deleted += 1
+
+    return deleted
 
 
 class SessionLogger:

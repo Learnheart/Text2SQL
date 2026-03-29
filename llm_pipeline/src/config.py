@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     schema_top_k: int = 5
     example_top_k: int = 3
 
+    # Log cleanup
+    log_retention_hours: int = 24
+
     # Redis Cache (managed by service-controller, db: 1)
     redis_url: str = "redis://localhost:6379/1"
     cache_query_ttl: int = 300       # 5 minutes

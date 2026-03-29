@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -18,6 +20,9 @@ from src.rag.retrieval import RAGRetrieval
 from src.agent.prompt_builder import PromptBuilder
 from src.agent.agent import Agent
 from src.llm.factory import create_llm_provider
+from src.session_logger import cleanup_old_logs
+
+logger = logging.getLogger(__name__)
 
 
 class AppState:
@@ -68,9 +73,24 @@ async def lifespan(app: FastAPI):
         llm_provider=llm_provider,
     )
 
+    # Log cleanup: run once at startup, then every hour
+    deleted = cleanup_old_logs(settings.log_retention_hours)
+    if deleted:
+        logger.info("Startup log cleanup: removed %d old log file(s)", deleted)
+
+    async def _periodic_log_cleanup() -> None:
+        while True:
+            await asyncio.sleep(3600)
+            n = cleanup_old_logs(settings.log_retention_hours)
+            if n:
+                logger.info("Periodic log cleanup: removed %d old log file(s)", n)
+
+    cleanup_task = asyncio.create_task(_periodic_log_cleanup())
+
     yield
 
     # --- Shutdown ---
+    cleanup_task.cancel()
     await state.db_pool.close()
     await state.audit_logger.close()
 
