@@ -5,12 +5,12 @@ load_dotenv()
 
 
 class Settings(BaseSettings):
-    # Database
+    # Database (managed by service-controller, project: text2sql)
     db_host: str = "localhost"
     db_port: int = 5432
-    db_name: str = "test_db"
-    db_user: str = "test_db_user"
-    db_password: str = "test_db_password"
+    db_name: str = "text2sql_db"
+    db_user: str = "postgres"
+    db_password: str = "postgres"
     db_min_pool: int = 2
     db_max_pool: int = 10
     db_statement_timeout_ms: int = 30_000
@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     schema_top_k: int = 5
     example_top_k: int = 3
 
-    # Redis Cache
-    redis_url: str = "redis://localhost:6379/0"
+    # Redis Cache (managed by service-controller, db: 1)
+    redis_url: str = "redis://localhost:6379/1"
     cache_query_ttl: int = 300       # 5 minutes
     cache_session_ttl: int = 1800    # 30 minutes
     cache_embedding_ttl: int = 3600  # 1 hour

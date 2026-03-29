@@ -5,7 +5,7 @@ Uses real PostgreSQL, Redis, pgvector, and bge-m3 embeddings.
 LLM is mocked with a FakeLLMProvider that returns pre-configured SQL responses.
 
 Requires:
-- Docker services running (pipeline_postgres, pipeline_redis)
+- Docker services running (infra-postgres, infra-redis via service-controller)
 - Database seeded with scripts/seed_test_data.sql
 """
 

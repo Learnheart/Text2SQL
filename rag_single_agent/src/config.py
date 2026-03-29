@@ -5,12 +5,12 @@ load_dotenv()
 
 
 class Settings(BaseSettings):
-    # Database
+    # Database (managed by service-controller, project: text2sql)
     db_host: str = "localhost"
     db_port: int = 5432
-    db_name: str = "test_db"
-    db_user: str = "test_db_user"
-    db_password: str = "test_db_password"
+    db_name: str = "text2sql_db"
+    db_user: str = "postgres"
+    db_password: str = "postgres"
     db_min_pool: int = 2
     db_max_pool: int = 5
     db_statement_timeout_ms: int = 30_000

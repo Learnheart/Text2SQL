@@ -33,9 +33,9 @@ random.seed(42)
 DATABASE_URL = os.getenv("DATABASE_URL")
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
-DB_NAME = os.getenv("DB_NAME", "test_db")
-DB_USER = os.getenv("DB_USER", "test_db_user")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "test_db_password")
+DB_NAME = os.getenv("DB_NAME", "text2sql_db")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
 
 if DATABASE_URL:
     conn_string = DATABASE_URL
