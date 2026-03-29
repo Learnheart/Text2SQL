@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -65,11 +66,13 @@ class Agent:
         log.step(2, "PROMPT_BUILD", "Building system prompt with RAG context")
         system_prompt = self._prompt_builder.build(rag_context)
         log.detail("PROMPT_BUILD", f"System prompt length: {len(system_prompt)} chars")
+        log.detail("PROMPT_BUILD", f"System prompt detail: {system_prompt}")
 
         # --- Step 3: LLM tool use loop ---
         log.step(3, "LLM_LOOP", f"Starting tool use loop (provider={settings.llm_provider}, model={settings.llm_model})")
         messages: list[dict[str, Any]] = [{"role": "user", "content": question}]
         iteration = 0
+        seen_tool_calls: set[str] = set()  # dedup guard: "tool_name:input_json"
 
         for _ in range(settings.agent_max_tool_calls):
             iteration += 1
@@ -95,6 +98,31 @@ class Agent:
 
             # Check if agent wants to call tools
             if llm_response.has_tool_calls:
+                # Dedup guard: detect repeated identical tool calls
+                dedup_keys = [
+                    f"{tc.name}:{json.dumps(tc.input, sort_keys=True)}"
+                    for tc in llm_response.tool_calls
+                ]
+                if all(k in seen_tool_calls for k in dedup_keys):
+                    log.detail(
+                        "DEDUP_BREAK",
+                        f"Duplicate tool calls detected at iteration {iteration}, "
+                        f"breaking loop: {[tc.name for tc in llm_response.tool_calls]}",
+                    )
+                    # Return response from results already collected (not an error)
+                    elapsed = int((time.perf_counter() - start) * 1000)
+                    agent_response = self._build_response(
+                        llm_response, tool_call_records, total_tokens, elapsed
+                    )
+                    log.step(4, "RESPONSE", f"status={agent_response.status} (dedup early stop)")
+                    log.complete(
+                        f"status={agent_response.status}, tokens={total_tokens}, "
+                        f"tool_calls={len(tool_call_records)}, iterations={iteration}"
+                    )
+                    if not session_log:
+                        log.close()
+                    return agent_response
+
                 # Append assistant response (provider-specific format)
                 messages.append(
                     self._llm.format_assistant_message(self._llm.last_raw_response)
@@ -103,6 +131,9 @@ class Agent:
                 # Process tool calls
                 tool_results: list[dict] = []
                 for tc in llm_response.tool_calls:
+                    call_key = f"{tc.name}:{json.dumps(tc.input, sort_keys=True)}"
+                    seen_tool_calls.add(call_key)
+
                     tool_input_summary = str(tc.input)[:200]
                     log.detail("TOOL_DISPATCH", f"{tc.name} → input: {tool_input_summary}")
 

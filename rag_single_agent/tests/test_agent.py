@@ -216,14 +216,70 @@ class TestAgentErrorRecovery:
 # Tests — Max tool calls
 # ---------------------------------------------------------------------------
 
+class TestAgentDedupGuard:
+    @pytest.mark.asyncio
+    async def test_dedup_breaks_on_identical_tool_calls(self, agent):
+        """Agent calls execute_sql with same input twice → dedup guard breaks loop."""
+        same_sql = "SELECT SUM(total_amount) FROM sales"
+        resp_tool = _llm_tool_use([
+            ToolCall(id="tc_1", name="execute_sql", input={"sql": same_sql}),
+        ])
+        # Model keeps returning the same tool call every iteration
+        agent._llm.create = MagicMock(return_value=resp_tool)
+
+        with patch("src.agent.agent.execute_sql", new_callable=AsyncMock) as mock_exec:
+            mock_exec.return_value = {"columns": ["sum"], "rows": [[1000000]], "row_count": 1}
+            result = await agent.run("Tổng doanh thu?")
+
+        # Should only execute once — dedup guard stops at iteration 2
+        assert mock_exec.call_count == 1
+        assert result.status == "success"
+        assert result.sql == same_sql
+        assert result.results["row_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_dedup_allows_different_inputs(self, agent):
+        """Same tool with different inputs should NOT be blocked by dedup."""
+        resp1 = _llm_tool_use([
+            ToolCall(id="tc_1", name="execute_sql", input={"sql": "SELECT * FROM bad_table"}),
+        ])
+        resp2 = _llm_tool_use([
+            ToolCall(id="tc_2", name="execute_sql", input={"sql": "SELECT * FROM sales LIMIT 10"}),
+        ])
+        resp3 = _llm_text("Here are the results.")
+
+        agent._llm.create = MagicMock(side_effect=[resp1, resp2, resp3])
+
+        call_count = 0
+
+        async def mock_exec(sql, pool):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {"error": 'relation "bad_table" does not exist'}
+            return {"columns": ["id"], "rows": [[1]], "row_count": 1}
+
+        with patch("src.agent.agent.execute_sql", side_effect=mock_exec):
+            result = await agent.run("Show sales")
+
+        assert result.status == "success"
+        assert len(result.tool_calls) == 2
+
+
 class TestAgentMaxToolCalls:
     @pytest.mark.asyncio
     async def test_max_tool_calls_reached(self, agent):
-        """Agent keeps calling tools until hitting the limit."""
-        tool_response = _llm_tool_use([
-            ToolCall(id="tc_loop", name="search_schema", input={"query": "something"}),
-        ])
-        agent._llm.create = MagicMock(return_value=tool_response)
+        """Agent keeps calling tools with different inputs until hitting the limit."""
+        call_idx = 0
+
+        def make_response(*args, **kwargs):
+            nonlocal call_idx
+            call_idx += 1
+            return _llm_tool_use([
+                ToolCall(id=f"tc_{call_idx}", name="search_schema", input={"query": f"something_{call_idx}"}),
+            ])
+
+        agent._llm.create = MagicMock(side_effect=make_response)
 
         with patch("src.agent.agent.search_schema", new_callable=AsyncMock) as mock_search:
             mock_search.return_value = {"results": []}
