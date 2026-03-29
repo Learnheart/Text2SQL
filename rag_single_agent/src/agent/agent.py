@@ -62,6 +62,21 @@ class Agent:
             f"Metrics: {len(rag_context.metrics)}",
         )
 
+        # --- Log retrieval output detail ---
+        for i, chunk in enumerate(rag_context.schema_chunks, 1):
+            log.detail("RETRIEVAL_SCHEMA", f"Chunk {i}/{len(rag_context.schema_chunks)}:\n{chunk}")
+        for i, ex in enumerate(rag_context.examples, 1):
+            log.detail(
+                "RETRIEVAL_EXAMPLE",
+                f"Example {i}/{len(rag_context.examples)}: "
+                f"Q: {ex.question} | SQL: {ex.sql}",
+            )
+        for m in rag_context.metrics:
+            log.detail(
+                "RETRIEVAL_METRIC",
+                f"Metric: {m.name} | SQL: {m.sql} | Filter: {m.filter} | Aliases: {m.aliases}",
+            )
+
         # --- Step 2: Build system prompt ---
         log.step(2, "PROMPT_BUILD", "Building system prompt with RAG context")
         system_prompt = self._prompt_builder.build(rag_context)
@@ -95,6 +110,23 @@ class Agent:
                 f"Iteration {iteration}: stop_reason={llm_response.stop_reason}, "
                 f"tokens={llm_response.total_tokens} ({llm_ms}ms)",
             )
+
+            # --- Log LLM reasoning output ---
+            if llm_response.text:
+                log.detail("REASONING", f"Iteration {iteration} LLM text:\n{llm_response.text}")
+
+            # --- Log tool choosing ---
+            if llm_response.has_tool_calls:
+                tool_names = [tc.name for tc in llm_response.tool_calls]
+                log.detail(
+                    "TOOL_CHOOSING",
+                    f"Iteration {iteration}: LLM chose {len(tool_names)} tool(s): {tool_names}",
+                )
+                for tc in llm_response.tool_calls:
+                    log.detail(
+                        "TOOL_CHOOSING",
+                        f"  → {tc.name}: {json.dumps(tc.input, ensure_ascii=False)}",
+                    )
 
             # Check if agent wants to call tools
             if llm_response.has_tool_calls:
@@ -152,6 +184,12 @@ class Agent:
                     result_summary = self._summarize_tool_result(tc.name, result)
                     log.detail("TOOL_RESULT", f"{tc.name} → {result_summary} ({tool_ms}ms)")
 
+                    # --- Log full tool execution output ---
+                    log.detail(
+                        "TOOL_EXECUTING",
+                        f"{tc.name} full output:\n{json.dumps(result, ensure_ascii=False, default=str)}"
+                    )
+
                     tool_results.append(
                         self._llm.format_tool_result(
                             tool_call_id=tc.id,
@@ -167,12 +205,31 @@ class Agent:
                     llm_response, tool_call_records, total_tokens, elapsed
                 )
 
-                # --- Step 4: Response ---
-                log.step(4, "RESPONSE", f"status={agent_response.status}, sql={'yes' if agent_response.sql else 'no'}")
+                # --- Step 4: Agent Explain ---
+                log.step(4, "AGENT_EXPLAIN", f"status={agent_response.status}, sql={'yes' if agent_response.sql else 'no'}")
+                if agent_response.explanation:
+                    log.detail("AGENT_EXPLAIN", f"Explanation:\n{agent_response.explanation}")
                 if agent_response.results:
-                    log.detail("RESPONSE", f"rows={agent_response.results.get('row_count', 0)}")
+                    log.detail("AGENT_EXPLAIN", f"rows={agent_response.results.get('row_count', 0)}")
 
-                # --- Step 5: Complete ---
+                # --- Step 5: Final Output ---
+                log.step(5, "FINAL_OUTPUT", "Building final output summary")
+                log.detail("FINAL_OUTPUT", f"Status: {agent_response.status}")
+                if agent_response.sql:
+                    log.detail("FINAL_OUTPUT", f"SQL:\n{agent_response.sql}")
+                if agent_response.results:
+                    log.detail(
+                        "FINAL_OUTPUT",
+                        f"Results: {agent_response.results.get('row_count', 0)} rows, "
+                        f"columns={agent_response.results.get('columns', [])}",
+                    )
+                log.detail(
+                    "FINAL_OUTPUT",
+                    f"Tokens: {total_tokens}, Latency: {elapsed}ms, "
+                    f"Tool calls: {len(tool_call_records)}, Iterations: {iteration}",
+                )
+
+                # --- Step 6: Complete ---
                 log.complete(
                     f"status={agent_response.status}, tokens={total_tokens}, "
                     f"tool_calls={len(tool_call_records)}, iterations={iteration}"

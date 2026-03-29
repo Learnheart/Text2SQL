@@ -47,7 +47,7 @@ class SessionLogger:
         self._start = time.perf_counter()
         self._step_start: float | None = None
         self._current_step = 0
-        self._total_steps = 5
+        self._total_steps = 6
         self._question = question or ""
 
         # Ensure log directory exists
