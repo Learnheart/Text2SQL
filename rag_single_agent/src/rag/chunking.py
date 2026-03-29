@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-_DEFAULT_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "data" / "schema.json"
+_DEFAULT_SCHEMA_PATH = Path(__file__).resolve().parents[3] / "data" / "schema.json"
 
 # Domain clusters: group related tables together for better retrieval.
 CLUSTERS: list[dict] = [

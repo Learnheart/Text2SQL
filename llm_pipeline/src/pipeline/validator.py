@@ -28,7 +28,7 @@ from src.pipeline.state import PipelineState
 if TYPE_CHECKING:
     from src.session_logger import SessionLogger
 
-_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "data" / "schema.json"
+_SCHEMA_PATH = Path(__file__).resolve().parents[3] / "data" / "schema.json"
 
 # DML statements that are NOT allowed
 _FORBIDDEN_KEYWORDS = {
