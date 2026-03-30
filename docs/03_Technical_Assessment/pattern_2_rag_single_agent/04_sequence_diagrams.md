@@ -1,8 +1,8 @@
-# Sequence Diagrams — RAG-Enhanced Single Agent
+# Sequence Diagrams — RAG-Enhanced Single Agent (BIRD Multi-Database)
 
-## Diagram 1: E2E Happy Path
+## Diagram 1: E2E Happy Path — Multi-Database Query
 
-Luồng đơn giản nhất — user hỏi, agent sinh SQL, execute, trả kết quả. So với Pattern 1, ít actors hơn (không có Router, Validator, Executor riêng).
+User hỏi về một database cụ thể (thông qua `db_id`), agent sinh SQL SQLite, execute trên đúng database.
 
 ```mermaid
 sequenceDiagram
@@ -13,40 +13,44 @@ sequenceDiagram
     participant VS as Vector Store (ChromaDB)
     participant PB as Prompt Builder
     participant Claude as Claude Sonnet (Agent)
-    participant PG as PostgreSQL
+    participant DR as Database Registry
+    participant SQLite as SQLite DB
 
-    User->>API: POST /api/query<br/>"Top 10 merchant doanh thu cao nhất quý trước?"
+    User->>API: POST /api/query<br/>{"question": "List publishers with sales < 10000",<br/> "db_id": "video_games"}
 
-    API->>RAG: retrieve_context(question)
-    RAG->>VS: vector search (schema chunks, top_k=5)
-    VS-->>RAG: schema chunks liên quan
-    RAG->>VS: vector search (examples, top_k=3)
-    VS-->>RAG: few-shot examples tương tự
-    RAG-->>API: RAGContext {schema_chunks, examples, metrics}
+    API->>RAG: retrieve_context(question, db_id="video_games")
+    RAG->>VS: vector search schema_chunks<br/>where: {db_id: "video_games"}, top_k=5
+    VS-->>RAG: schema chunks (publisher, game_publisher, region_sales...)
+    RAG->>VS: vector search examples<br/>where: {db_id: "video_games", split: "train"}, top_k=3
+    VS-->>RAG: few-shot examples (train split only)
+    RAG-->>API: RAGContext {schema_chunks, examples, evidence}
 
-    API->>PB: build_prompt(system_rules, rag_context, question)
+    API->>PB: build_prompt(rules, rag_context, question)
+    Note over PB: System prompt enforces SQLite syntax
     PB-->>API: Full prompt + tool definitions
 
     API->>Claude: messages.create(prompt, tools=[execute_sql, ...])
 
-    Note over Claude: REASON: Phân tích câu hỏi<br/>→ Cần bảng sales + merchants<br/>→ Metric "doanh thu" = SUM(total_amount)<br/>→ "quý trước" = DATE_TRUNC
+    Note over Claude: REASON: Phân tích câu hỏi<br/>→ Cần tables: publisher, region_sales,<br/>  game_publisher, game_platform<br/>→ Evidence: "num_sales < 0.1 means < 10000"<br/>→ Sinh SQLite SQL
 
-    Claude->>API: tool_use: execute_sql(sql="SELECT m.name, SUM(s.total_amount)...")
-    API->>PG: Execute SQL (read-only, timeout 30s)
-    PG-->>API: ResultSet (10 rows)
-    API->>Claude: tool_result: {columns: [...], rows: [...], row_count: 10}
+    Claude->>API: tool_use: execute_sql(sql="SELECT DISTINCT T5.publisher_name ...")
+    API->>DR: get_connection("video_games")
+    DR-->>API: path: data/bird/databases/video_games/video_games.sqlite
+    API->>SQLite: Execute SQL (read-only)
+    SQLite-->>API: ResultSet (rows)
+    API->>Claude: tool_result: {columns: ["publisher_name"], rows: [...], row_count: 5}
 
-    Note over Claude: REASON: Kết quả hợp lệ<br/>→ Sinh giải thích cho user
+    Note over Claude: Kết quả hợp lệ<br/>→ Sinh giải thích
 
     Claude-->>API: Response: SQL + explanation
-    API-->>User: {sql, results, explanation}
+    API-->>User: {db_id, sql, results, explanation}
 ```
 
 ---
 
-## Diagram 2: Multi-Tool Interaction
+## Diagram 2: Multi-Tool Interaction — Schema Discovery
 
-Khi câu hỏi phức tạp, Claude có thể gọi **nhiều tools liên tiếp** trước khi sinh SQL cuối cùng.
+Câu hỏi phức tạp trên database không quen. Claude cần gọi nhiều tools để tìm hiểu schema trước khi sinh SQL.
 
 ```mermaid
 sequenceDiagram
@@ -56,63 +60,57 @@ sequenceDiagram
     participant RAG as RAG Retrieval Module
     participant Claude as Claude Sonnet (Agent)
     participant VS as Vector Store
-    participant SL as Semantic Layer
-    participant PG as PostgreSQL
+    participant DR as Database Registry
+    participant SQLite as SQLite DB
 
-    User->>API: "So sánh doanh thu và tỷ lệ hoàn tiền<br/>giữa các khu vực tháng trước"
-    API->>RAG: retrieve_context(question)
-    RAG-->>API: RAGContext (initial schema + examples)
+    User->>API: "What is the average rating of restaurants<br/>that failed inspection?"<br/>db_id: "food_inspection_2"
+
+    API->>RAG: retrieve_context(question, db_id="food_inspection_2")
+    RAG-->>API: RAGContext (schema chunks + train examples)
     API->>Claude: messages.create(prompt + tools)
 
-    Note over Claude: REASON: Câu hỏi cần 2 metrics<br/>+ dimension "khu vực"<br/>→ RAG context chưa rõ bảng nào chứa "khu vực"
+    Note over Claude: REASON: Cần tìm tables liên quan<br/>"rating" và "inspection" và "failed"<br/>→ RAG context chưa đủ rõ column names
 
     rect rgb(255, 243, 224)
         Note right of Claude: Tool call 1: search_schema
-        Claude->>API: tool_use: search_schema("khu vực region area")
-        API->>VS: vector search("khu vực region area")
-        VS-->>API: schema chunk: merchants.city, branches.city
-        API->>Claude: tool_result: "merchants.city (khu vực merchant),<br/>branches.city (khu vực chi nhánh)"
+        Claude->>API: tool_use: search_schema("restaurant rating score")
+        API->>VS: vector search where: {db_id: "food_inspection_2"}
+        VS-->>API: schema chunk: "inspection(id, restaurant_id, score, result, ...)"
+        API->>Claude: tool_result: table inspection with columns score, result
     end
 
-    Note over Claude: REASON: "khu vực" = merchants.city<br/>→ Cần resolve metric "doanh thu" và "tỷ lệ hoàn tiền"
+    Note over Claude: REASON: "failed" → cần biết giá trị<br/>cột "result" là gì
 
     rect rgb(243, 229, 245)
-        Note right of Claude: Tool call 2: get_metric_definition
-        Claude->>API: tool_use: get_metric_definition("doanh thu")
-        API->>SL: lookup("doanh thu")
-        SL-->>API: {sql: "SUM(sales.total_amount)", filter: "status='completed'"}
-        API->>Claude: tool_result: doanh_thu definition
+        Note right of Claude: Tool call 2: get_column_values
+        Claude->>API: tool_use: get_column_values("inspection", "result")
+        API->>DR: get_connection("food_inspection_2")
+        DR-->>API: SQLite connection
+        API->>SQLite: SELECT DISTINCT result FROM inspection LIMIT 50
+        SQLite-->>API: ["Pass", "Fail", "Pass w/ Conditions", "No Entry"]
+        API->>Claude: tool_result: values: ["Pass", "Fail", "Pass w/ Conditions", ...]
     end
 
-    rect rgb(243, 229, 245)
-        Note right of Claude: Tool call 3: get_metric_definition
-        Claude->>API: tool_use: get_metric_definition("tỷ lệ hoàn tiền")
-        API->>SL: lookup("tỷ lệ hoàn tiền")
-        SL-->>API: {sql: "COUNT(refunds.id)::FLOAT / NULLIF(COUNT(sales.id), 0)"}
-        API->>Claude: tool_result: refund_rate definition
-    end
-
-    Note over Claude: REASON: Đã có đủ thông tin<br/>→ Sinh SQL với JOIN sales + merchants + refunds
+    Note over Claude: REASON: "failed" = result = 'Fail'<br/>→ Đã đủ thông tin, sinh SQL
 
     rect rgb(232, 245, 233)
-        Note right of Claude: Tool call 4: execute_sql
-        Claude->>API: tool_use: execute_sql("SELECT m.city, SUM(s.total_amount)...")
-        API->>PG: Execute SQL
-        PG-->>API: ResultSet (5 rows)
-        API->>Claude: tool_result: {rows: [...]}
+        Note right of Claude: Tool call 3: execute_sql
+        Claude->>API: tool_use: execute_sql(<br/>"SELECT AVG(r.rating) FROM restaurant r<br/>JOIN inspection i ON r.id = i.restaurant_id<br/>WHERE i.result = 'Fail'")
+        API->>DR: get_connection("food_inspection_2")
+        API->>SQLite: Execute SQL
+        SQLite-->>API: ResultSet (1 row)
+        API->>Claude: tool_result: {columns: ["AVG(r.rating)"], rows: [[3.2]]}
     end
 
-    Note over Claude: REASON: Sinh giải thích so sánh<br/>giữa các khu vực
-
-    Claude-->>API: Response: SQL + kết quả + giải thích so sánh
-    API-->>User: {sql, results, explanation}
+    Claude-->>API: Response: SQL + "Average rating is 3.2 for failed restaurants"
+    API-->>User: {db_id, sql, results, explanation}
 ```
 
 ---
 
-## Diagram 3: Error Recovery (LLM Self-Correction)
+## Diagram 3: Error Recovery — LLM Self-Correction
 
-Khi SQL bị lỗi, Claude **tự đọc error message** và **tự sửa SQL** — không có code-based validator.
+SQL bị lỗi do schema phức tạp. Claude đọc error, tìm hiểu thêm schema, sửa SQL.
 
 ```mermaid
 sequenceDiagram
@@ -120,52 +118,56 @@ sequenceDiagram
     participant User as Người dùng
     participant API as REST API
     participant Claude as Claude Sonnet (Agent)
-    participant PG as PostgreSQL
+    participant VS as Vector Store
+    participant DR as Database Registry
+    participant SQLite as SQLite DB
 
-    User->>API: "Tổng doanh thu theo loại sản phẩm"
+    User->>API: "Total revenue by car brand"<br/>db_id: "car_retails"
     API->>Claude: messages.create(prompt + tools)
 
-    Note over Claude: REASON: Cần bảng sales + products<br/>→ Sinh SQL
+    Note over Claude: REASON: "revenue" → sales amount<br/>"car brand" → car model brand<br/>→ Sinh SQL
 
     rect rgb(255, 235, 238)
         Note right of Claude: Lần 1: SQL có lỗi
-        Claude->>API: tool_use: execute_sql(<br/>"SELECT product_type, SUM(total_amount)..."<br/>)
-        API->>PG: Execute SQL
-        PG-->>API: ERROR: column "product_type" does not exist
-        API->>Claude: tool_result: {error: "column 'product_type'<br/>does not exist"}
+        Claude->>API: tool_use: execute_sql(<br/>"SELECT brand, SUM(revenue) FROM cars GROUP BY brand")
+        API->>DR: get_connection("car_retails")
+        API->>SQLite: Execute SQL
+        SQLite-->>API: ERROR: no such table: cars
+        API->>Claude: tool_result: {error: "no such table: cars"}
     end
 
-    Note over Claude: OBSERVE: Column sai tên<br/>→ Có thể là "product_category"<br/>hoặc cần check schema
+    Note over Claude: OBSERVE: Table "cars" không tồn tại<br/>→ Cần tìm đúng tên table
 
     rect rgb(255, 243, 224)
-        Note right of Claude: Gọi tool để verify column name
-        Claude->>API: tool_use: search_schema("product type category")
-        API-->>Claude: tool_result: "products.product_category_id,<br/>product_categories.category_name"
+        Note right of Claude: Gọi search_schema để verify
+        Claude->>API: tool_use: search_schema("car vehicle product brand")
+        API->>VS: vector search where: {db_id: "car_retails"}
+        VS-->>API: "CREATE TABLE products (productCode TEXT PK,<br/>productName TEXT, productLine TEXT, productScale TEXT,<br/>productVendor TEXT, buyPrice REAL, MSRP REAL)"<br/>"CREATE TABLE orderdetails (orderNumber INTEGER,<br/>productCode TEXT, quantityOrdered INTEGER,<br/>priceEach REAL, orderLineNumber INTEGER)"
+        API->>Claude: tool_result: tables products + orderdetails
     end
 
-    Note over Claude: REASON: Cần JOIN products + product_categories<br/>→ Sửa SQL
+    Note over Claude: REASON: "brand" = productVendor<br/>"revenue" = SUM(quantityOrdered * priceEach)<br/>→ Sửa SQL
 
     rect rgb(232, 245, 233)
         Note right of Claude: Lần 2: SQL đã sửa
-        Claude->>API: tool_use: execute_sql(<br/>"SELECT pc.category_name, SUM(s.total_amount)...<br/>JOIN products p ON s.product_id = p.id<br/>JOIN product_categories pc ON p.product_category_id = pc.id..."<br/>)
-        API->>PG: Execute SQL
-        PG-->>API: ResultSet (8 rows)
+        Claude->>API: tool_use: execute_sql(<br/>"SELECT p.productVendor, SUM(od.quantityOrdered * od.priceEach)<br/>FROM products p JOIN orderdetails od ON p.productCode = od.productCode<br/>GROUP BY p.productVendor ORDER BY 2 DESC")
+        API->>DR: get_connection("car_retails")
+        API->>SQLite: Execute SQL
+        SQLite-->>API: ResultSet (rows)
         API->>Claude: tool_result: {columns: [...], rows: [...]}
     end
 
-    Note over Claude: Kết quả OK → Sinh giải thích
-
     Claude-->>API: Response: SQL (đã sửa) + kết quả + giải thích
-    API-->>User: {sql, results, explanation}
+    API-->>User: {db_id, sql, results, explanation}
 
-    Note over User, PG: LƯU Ý: Không có code validator kiểm tra trước.<br/>LLM tự phát hiện lỗi từ DB error message.<br/>Không có hard limit retry — phụ thuộc LLM judgment.
+    Note over User, SQLite: LLM tự phát hiện lỗi từ error message,<br/>tự tìm schema đúng, tự sửa SQL.<br/>Không có code validator riêng.
 ```
 
 ---
 
 ## Diagram 4: Streaming Flow
 
-Streaming qua WebSocket — token được stream realtime, tạm dừng khi tool call, tiếp tục sau khi tool trả kết quả.
+Streaming qua WebSocket với db_id context.
 
 ```mermaid
 sequenceDiagram
@@ -174,94 +176,162 @@ sequenceDiagram
     participant WS as WebSocket
     participant RAG as RAG Retrieval Module
     participant Claude as Claude API (Streaming)
-    participant PG as PostgreSQL
+    participant DR as Database Registry
+    participant SQLite as SQLite DB
 
-    User->>WS: ws://connect + gửi câu hỏi
-    WS->>RAG: retrieve_context(question)
-    RAG-->>WS: RAGContext
+    User->>WS: ws://connect<br/>{"question": "How many games per genre?", "db_id": "video_games"}
+    WS->>RAG: retrieve_context(question, db_id="video_games")
+    RAG-->>WS: RAGContext (video_games schema + train examples)
 
     WS->>Claude: messages.create(stream=True, prompt, tools)
 
     rect rgb(232, 245, 233)
         Note over Claude, WS: Streaming Phase 1: LLM reasoning
-        Claude-->>WS: stream token: "Tôi sẽ truy vấn..."
-        WS-->>User: "Tôi sẽ truy vấn..."
-        Claude-->>WS: stream token: "...dữ liệu doanh thu..."
-        WS-->>User: "...dữ liệu doanh thu..."
+        Claude-->>WS: stream token: "I'll query the video_games database..."
+        WS-->>User: "I'll query the video_games database..."
+        Claude-->>WS: stream token: "...to count games per genre."
+        WS-->>User: "...to count games per genre."
     end
 
     rect rgb(255, 243, 224)
-        Note over Claude, PG: Tool Call — Stream tạm dừng
+        Note over Claude, SQLite: Tool Call — Stream tạm dừng
         Claude-->>WS: tool_use: execute_sql(...)
-        WS->>PG: Execute SQL (read-only)
-        Note over WS, User: Gửi status: "Đang truy vấn database..."
+        WS->>DR: get_connection("video_games")
+        DR-->>WS: SQLite path
+        WS->>SQLite: Execute SQL (read-only)
+        Note over WS, User: Gửi status: "Querying video_games database..."
         WS-->>User: [status: executing_query]
-        PG-->>WS: ResultSet
+        SQLite-->>WS: ResultSet
         WS->>Claude: tool_result: {rows: [...]}
     end
 
     rect rgb(232, 245, 233)
         Note over Claude, WS: Streaming Phase 2: Explanation
-        Claude-->>WS: stream token: "Kết quả cho thấy..."
-        WS-->>User: "Kết quả cho thấy..."
-        Claude-->>WS: stream token: "...Merchant A dẫn đầu với..."
-        WS-->>User: "...Merchant A dẫn đầu với..."
-        Claude-->>WS: stream token: "...50 triệu đồng doanh thu."
-        WS-->>User: "...50 triệu đồng doanh thu."
+        Claude-->>WS: stream token: "The results show..."
+        WS-->>User: "The results show..."
+        Claude-->>WS: stream token: "...Action genre has the most games (210)."
+        WS-->>User: "...Action genre has the most games (210)."
     end
 
     Claude-->>WS: [end_turn]
-    WS-->>User: {complete: true, sql: "...", results: {...}}
+    WS-->>User: {complete: true, db_id: "video_games", sql: "...", results: {...}}
 ```
-
-**Lưu ý về streaming:**
-- **Phase 1 (reasoning):** Tokens stream liên tục cho user thấy "agent đang suy nghĩ"
-- **Tool call:** Stream tạm dừng. Application gửi status message ("đang truy vấn database...")
-- **Phase 2 (explanation):** Stream tiếp tục với giải thích kết quả
-- Perceived latency giảm đáng kể: user thấy response sau ~1s thay vì đợi 5-6s
 
 ---
 
-## Diagram 5: Out-of-scope Handling
+## Diagram 5: Evaluation Flow
 
-Không có Router riêng — LLM tự xác định câu hỏi nằm ngoài phạm vi dựa trên system prompt rules.
+Chạy evaluation trên BIRD test split. Strict isolation: test examples **không bao giờ** xuất hiện trong few-shot.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant User as Người dùng
-    participant API as REST API
-    participant RAG as RAG Retrieval Module
-    participant VS as Vector Store
-    participant Claude as Claude Sonnet (Agent)
+    participant Eval as Evaluation Engine
+    participant TestSet as Test Split<br/>(~90% BIRD examples)
+    participant Agent as Agent Pipeline<br/>(RAG → Claude → Tools)
+    participant DR as Database Registry
+    participant SQLite as SQLite DB
+    participant Report as Eval Report
 
-    User->>API: "Thời tiết hôm nay thế nào?"
+    Eval->>TestSet: Load test_split.json
 
-    API->>RAG: retrieve_context(question)
-    RAG->>VS: vector search("thời tiết hôm nay")
-    VS-->>RAG: Low similarity scores (< 0.3)
-    Note over RAG: Kết quả retrieval không liên quan<br/>nhưng vẫn trả về (không có Router filter)
-    RAG-->>API: RAGContext {schema_chunks: [...], examples: [...]}
+    loop For each test example
+        TestSet-->>Eval: {question, db_id, ground_truth_sql, evidence}
 
-    API->>Claude: messages.create(prompt + tools)
+        Note over Eval: Verify: question NOT in train split
 
-    Note over Claude: System prompt rule:<br/>"Chỉ trả lời câu hỏi liên quan đến<br/>dữ liệu Banking/POS trong database.<br/>Nếu câu hỏi ngoài phạm vi,<br/>từ chối lịch sự."
+        Eval->>Agent: run(question, db_id, evidence=optional)
+        Note over Agent: RAG retrieves train examples only<br/>Claude generates SQL<br/>Tools execute on SQLite
+        Agent-->>Eval: {generated_sql, results, error}
 
-    Note over Claude: REASON: "thời tiết" không liên quan<br/>đến Banking/POS data<br/>→ Từ chối lịch sự
+        Eval->>DR: get_connection(db_id)
+        DR-->>Eval: SQLite connection
+        Eval->>SQLite: Execute ground_truth_sql
+        SQLite-->>Eval: expected_result
 
-    Claude-->>API: "Xin lỗi, tôi chỉ có thể giúp bạn truy vấn<br/>dữ liệu liên quan đến hệ thống Banking/POS.<br/>Ví dụ, bạn có thể hỏi:<br/>- Doanh thu tháng này bao nhiêu?<br/>- Top 10 merchant hoạt động nhiều nhất?<br/>- Phân bố KYC status của khách hàng?"
+        alt generated_sql executed successfully
+            Eval->>SQLite: Execute generated_sql
+            SQLite-->>Eval: generated_result
 
-    API-->>User: {type: "out_of_scope", message: "..."}
+            alt set(generated_result) == set(expected_result)
+                Note over Eval: ✓ MATCH — Execution Accuracy +1
+            else Results differ
+                Note over Eval: ✗ MISMATCH — Log for analysis
+            end
+        else generated_sql had error
+            Note over Eval: ✗ ERROR — Log error type
+        end
 
-    Note over User, Claude: SO SÁNH VỚI PATTERN 1:<br/>Pattern 1: Router (code) detect ngay = fast, deterministic, 0 LLM cost<br/>Pattern 2: LLM phải xử lý = chậm hơn, tốn token, có thể sai<br/><br/>Rủi ro: LLM có thể cố trả lời thay vì từ chối,<br/>đặc biệt với câu hỏi mơ hồ (borderline cases)
+        Eval->>Report: Append result
+    end
+
+    Eval->>Report: Aggregate & generate report
+    Report-->>Eval: {<br/>  overall_accuracy: 78.5%,<br/>  per_db: {video_games: 82%, car_retails: 71%, ...},<br/>  error_rate: 8.2%,<br/>  avg_latency: 4.1s<br/>}
 ```
 
 ---
 
-## Tổng Kết: So Sánh Actors Giữa Các Diagram
+## Diagram 6: Data Pipeline — One-time Setup
 
-| Diagram | Pattern 1 Actors | Pattern 2 Actors | Giảm |
-|---------|-----------------|-----------------|------|
-| **Happy Path** | User, API, Router, Schema Linker, Vector Store, SQL Generator, Claude, Validator, Executor, PostgreSQL, Insight | User, API, RAG Module, Vector Store, Prompt Builder, Claude, PostgreSQL | **11 → 7** |
-| **Error Recovery** | Generator, Validator (code loop, max 3 retries) | Claude tự retry (không giới hạn bằng code) | Code-controlled → LLM-controlled |
-| **Out-of-scope** | Router (code) detect ngay, 0 LLM cost | Claude (LLM) phải xử lý, tốn 1 API call | Deterministic → Probabilistic |
+Setup flow chạy một lần để index BIRD data.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Script as Data Pipeline Script
+    participant HF as HuggingFace Hub
+    participant FS as File System
+    participant VS as Vector Store (ChromaDB)
+    participant Embed as Embedding Model
+
+    Script->>HF: load_dataset("xu3kev/BIRD-SQL-data-train")
+    HF-->>Script: 9,430+ examples {db_id, question, SQL, evidence, schema}
+
+    Script->>FS: Download BIRD SQLite database files
+    FS-->>Script: 70+ .sqlite files
+
+    Note over Script: Group examples by db_id
+
+    loop For each database
+        Note over Script: Split examples: ~10% train, ~90% test<br/>(stratified random split)
+
+        Script->>FS: Save train_split.json, test_split.json
+
+        Note over Script: Extract schema DDL from examples<br/>Chunk into table groups
+
+        loop For each schema chunk
+            Script->>Embed: embed(chunk_text)
+            Embed-->>Script: vector [0.12, -0.45, ...]
+            Script->>VS: upsert(collection="schema_chunks",<br/>id=chunk_id, embedding=vector,<br/>metadata={db_id, tables})
+        end
+
+        loop For each train example only
+            Script->>Embed: embed(question)
+            Embed-->>Script: vector
+            Script->>VS: upsert(collection="examples",<br/>id=example_id, embedding=vector,<br/>metadata={db_id, split="train"})
+        end
+    end
+
+    Note over Script: VERIFY: No test examples in vector store
+    Script->>VS: query(where={split: "test"})
+    VS-->>Script: 0 results ✓
+
+    Note over Script: VERIFY: All db_ids have SQLite files
+    Script->>FS: Check data/bird/databases/{db_id}/{db_id}.sqlite
+    FS-->>Script: All exist ✓
+
+    Note over Script: Pipeline complete.<br/>Schema chunks indexed: ~1500<br/>Train examples indexed: ~940<br/>Databases registered: 70+
+```
+
+---
+
+## Tổng Kết: So Sánh Actors
+
+| Diagram | Actors | Mới/Thay đổi |
+|---------|--------|-------------|
+| **Happy Path** | User, API, RAG, VS, PB, Claude, **DB Registry**, **SQLite** | DB Registry + SQLite thay PostgreSQL |
+| **Multi-Tool** | User, API, RAG, Claude, VS, **DB Registry**, **SQLite** | Tất cả tool calls route qua DB Registry |
+| **Error Recovery** | User, API, Claude, VS, **DB Registry**, **SQLite** | SQLite error messages thay PostgreSQL |
+| **Streaming** | User, WS, RAG, Claude, **DB Registry**, **SQLite** | db_id trong stream context |
+| **Evaluation** | **Eval Engine**, **Test Set**, Agent, **DB Registry**, **SQLite**, **Report** | Hoàn toàn mới |
+| **Data Pipeline** | **Pipeline Script**, **HF**, FS, VS, Embed | Hoàn toàn mới |

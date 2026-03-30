@@ -1,8 +1,13 @@
-# Tech Stack Đề Xuất — RAG-Enhanced Single Agent
+# Tech Stack Đề Xuất — RAG-Enhanced Single Agent (BIRD Multi-Database)
 
 ## Định Hướng
 
-Đây là **Phase 1 (R&D)** — mục tiêu là **minimal stack** để validate feasibility nhanh nhất có thể trong 2-3 tuần. Không cần orchestration framework, không cần monitoring phức tạp, không cần production-grade infrastructure.
+Đây là **Phase 1 (R&D)** — mục tiêu là validate Text-to-SQL accuracy trên **BIRD benchmark** với multi-database support. Stack tối giản, ưu tiên **evaluation accuracy** và **iteration speed**.
+
+**Thay đổi chính so với phiên bản banking:**
+- **SQLite** thay PostgreSQL (match BIRD ground truth)
+- **HuggingFace Datasets** để download/process BIRD data
+- Bỏ banking-specific dependencies (semantic layer, custom gen_data)
 
 ---
 
@@ -10,14 +15,16 @@
 
 | Layer | Component | Technology | Ghi chú |
 |-------|-----------|-----------|---------|
-| **LLM** | Primary | **Claude Sonnet 4.6** | Tool use native tốt nhất, accuracy cao trên SQL, hỗ trợ tiếng Việt |
-| **Embedding** | Model | **bge-large-en-v1.5** (hiện tại) → **bge-m3** (upgrade) | bge-m3 hỗ trợ multilingual (tiếng Việt), dense + sparse retrieval |
-| **Framework** | Agent | **Claude Tool Use (native)** — không cần framework | Claude API hỗ trợ tool calling trực tiếp, đủ cho single-agent |
-| **API** | Web Server | **FastAPI** | Async native, WebSocket support, auto OpenAPI docs |
-| **Vector DB** | Dev | **ChromaDB** | Đã setup, đủ cho <100 documents, API đơn giản |
-| **Database** | Primary | **PostgreSQL 18 + pgvector** (existing) | Chứa business data + có thể chứa embeddings |
-| **UI** | POC | **Streamlit** | Rapid POC UI bằng Python, không cần frontend expertise |
-| **Language** | Runtime | **Python 3.11+** | Ecosystem ML/AI lớn nhất, team đã quen |
+| **LLM** | Primary | **Claude Sonnet 4.6** | Tool use native, accuracy cao trên SQL |
+| **Embedding** | Model | **bge-large-en-v1.5** (hiện tại) → **bge-m3** (upgrade) | bge-m3 hỗ trợ multilingual |
+| **Framework** | Agent | **Claude Tool Use (native)** | Không cần framework cho single-agent |
+| **API** | Web Server | **FastAPI** | Async native, WebSocket support |
+| **Vector DB** | Dev | **ChromaDB** | Multi-collection, metadata filtering |
+| **Database** | Evaluation | **SQLite** (BIRD native) | Match ground truth SQL syntax |
+| **Database** | Future Prod | **PostgreSQL 18** | Giữ cho production migration |
+| **Data** | Dataset | **HuggingFace Datasets** | Download & process BIRD-SQL |
+| **UI** | POC | **Streamlit** | Database selector dropdown |
+| **Language** | Runtime | **Python 3.11+** | ML/AI ecosystem |
 
 ---
 
@@ -25,150 +32,170 @@
 
 ### 1. LLM: Claude Sonnet 4.6
 
+Giữ nguyên lựa chọn — lý do vẫn đúng:
+
 | Tiêu chí | Claude Sonnet 4.6 | GPT-4o | DeepSeek V3 |
 |----------|-------------------|--------|-------------|
 | SQL Accuracy (ước lượng) | ~87% | ~85% | ~80% |
 | Tool Use | Native, structured | Tốt | Khá |
-| Tiếng Việt | Tốt | Tốt | Trung bình |
 | Cost (1M tokens) | $3 / $15 | $2.5 / $10 | $0.27 / $1.1 |
-| **Verdict** | **Best balance** | Rẻ hơn, tool use kém hơn | Rất rẻ, accuracy thấp hơn |
+| **Verdict** | **Best balance** | Rẻ hơn | Rất rẻ |
 
-**Lý do chọn Claude Sonnet:**
-- Tool use native tốt nhất thị trường — quan trọng vì Pattern 2 phụ thuộc hoàn toàn vào tool calling
-- Accuracy cao trên SQL generation benchmarks
-- Hỗ trợ tiếng Việt đủ tốt cho bilingual input
-- Cost hợp lý cho R&D phase (~$3 input / $15 output per 1M tokens)
+**Lưu ý cho BIRD evaluation:** Accuracy trên BIRD benchmark thường thấp hơn single-domain benchmarks do schema diversity. Expect 60-80% EX accuracy thay vì 85-92% trên single domain.
 
-### 2. Framework: Claude Tool Use (Native) — Không Cần Framework
+### 2. Database: SQLite (Evaluation) + PostgreSQL (Future Production)
 
-**Điểm then chốt: KHÔNG cần orchestration framework** cho Pattern 2.
+**Đây là thay đổi lớn nhất** so với phiên bản banking.
 
-| Framework | Cần cho Pattern 2? | Lý do |
-|-----------|-------------------|-------|
-| **Claude Tool Use (native)** | **Dùng cái này** | Claude API hỗ trợ tool definitions + tool results trực tiếp. Không cần abstraction layer |
-| LangGraph | Không | LangGraph dành cho graph-based workflows (multi-step pipeline). Single agent không cần |
-| LangChain | Không | Over-abstraction. Single agent + 4 tools = vài chục dòng code Python |
-| CrewAI | Không | Multi-agent framework. Pattern 2 chỉ có 1 agent |
-| AutoGen | Không | Research-oriented, quá nặng |
+| Tiêu chí | SQLite (BIRD eval) | PostgreSQL (production) |
+|----------|-------------------|----------------------|
+| **Mục đích** | Evaluation accuracy trên BIRD | Production deployment |
+| **Khi nào dùng** | Phase 1 (R&D) | Phase 2+ |
+| **Lý do** | Match BIRD ground truth SQL syntax | Enterprise standard |
+| **Data** | BIRD database files (có sẵn) | Business data |
+| **SQL syntax** | SQLite-specific | PostgreSQL-specific |
 
-**Tại sao native tool use đủ?**
+**Tại sao SQLite cho BIRD evaluation:**
 
-```python
-# Toàn bộ agent logic chỉ cần ~50 dòng code:
+```
+Nếu dùng PostgreSQL cho BIRD:
+  1. Convert 70+ SQLite databases → PostgreSQL (DDL + data)
+  2. Convert 9,430+ ground truth SQL: SQLite syntax → PG syntax
+     - GROUP_CONCAT → STRING_AGG
+     - IFNULL → COALESCE
+     - SUBSTR → SUBSTRING
+     - Không có :: casting trong SQLite
+     - DATE functions hoàn toàn khác
+  3. Risk: conversion errors → evaluation không chính xác
+  4. Effort: rất cao
 
-import anthropic
-
-client = anthropic.Anthropic()
-
-tools = [
-    {
-        "name": "execute_sql",
-        "description": "Execute a SELECT SQL query on PostgreSQL",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "sql": {"type": "string", "description": "SQL query to execute"}
-            },
-            "required": ["sql"]
-        }
-    },
-    # ... search_schema, get_metric_definition, get_column_values
-]
-
-def run_agent(question: str, rag_context: str):
-    messages = [{"role": "user", "content": question}]
-
-    while True:
-        response = client.messages.create(
-            model="claude-sonnet-4-6-20250514",
-            system=build_system_prompt(rag_context),
-            messages=messages,
-            tools=tools,
-            max_tokens=4096
-        )
-
-        # Nếu có tool calls, execute và gửi results lại
-        if response.stop_reason == "tool_use":
-            tool_results = execute_tool_calls(response)
-            messages.append({"role": "assistant", "content": response.content})
-            messages.append({"role": "user", "content": tool_results})
-        else:
-            # Agent đã hoàn thành — trả response cho user
-            return extract_response(response)
+Nếu dùng SQLite:
+  1. Dùng trực tiếp BIRD databases (zero conversion)
+  2. Ground truth SQL chạy as-is
+  3. System sinh SQLite SQL → so sánh trực tiếp
+  4. Evaluation 100% chính xác
+  → LỰA CHỌN NÀY ✓
 ```
 
-**Lợi ích:**
-- Giảm dependency (không phụ thuộc framework bên ngoài)
-- Code đơn giản, dễ hiểu, dễ debug
-- Đủ cho single-agent pattern
-- Dễ migrate sang LangGraph ở Phase 2 khi cần pipeline phức tạp hơn
+**SQLite Python integration:**
 
-### 3. Vector DB: ChromaDB (Dev)
+```python
+import sqlite3
 
-| Tiêu chí | ChromaDB | pgvector | Pinecone |
-|----------|----------|----------|----------|
-| Setup complexity | Rất thấp | Trung bình | Cao (SaaS) |
-| Phù hợp cho <100 docs | Tốt | Tốt | Overkill |
-| Python API | Đơn giản | Cần psycopg2 | SDK riêng |
-| Cost | Free (local) | Free (đã có) | Trả phí |
-| **Verdict** | **Dùng cho POC** | Phase 2 consolidate | Không cần |
+# Read-only connection — không thể modify BIRD data
+conn = sqlite3.connect("file:video_games.sqlite?mode=ro", uri=True)
+cursor = conn.execute("SELECT * FROM game LIMIT 10")
+rows = cursor.fetchall()
+columns = [desc[0] for desc in cursor.description]
+```
 
-**Tại sao ChromaDB cho dev:**
-- Đã setup sẵn trong project
-- API cực đơn giản: `collection.query(query_embeddings=[...], n_results=5)`
-- Đủ performance cho <100 documents (14 bảng chunked thành ~30-50 docs)
-- Không cần server riêng — chạy in-process hoặc local server
+- Không cần server (embedded database)
+- Không cần connection pool (mỗi request mở/đóng connection)
+- Read-only mode native (`?mode=ro`)
+- Python standard library — zero extra dependencies
 
-**Khi nào chuyển sang pgvector:**
-- Phase 2 — khi migrate sang Pattern 1
-- Lý do: giảm infra complexity (1 DB cho tất cả), pgvector đủ cho <10K embeddings
+### 3. Data: HuggingFace Datasets [NEW]
 
-### 4. API: FastAPI
-
-| Lý do chọn | Chi tiết |
+| Thuộc tính | Chi tiết |
 |-----------|---------|
-| **Async native** | Phù hợp cho LLM API calls (I/O bound, cần non-blocking) |
-| **WebSocket support** | Built-in, cần cho streaming response |
-| **Auto OpenAPI docs** | `/docs` endpoint tự động generate — tiện cho POC demo |
-| **Python ecosystem** | Team đã quen, tích hợp tốt với ML libraries |
+| **Library** | `datasets` (HuggingFace) |
+| **Dataset** | `xu3kev/BIRD-SQL-data-train` |
+| **Kích thước** | 9,430+ examples, 70+ databases |
+| **Format** | Parquet (auto-converted by HF) |
 
-### 5. UI: Streamlit (POC)
+```python
+from datasets import load_dataset
 
-| Lý do chọn | Chi tiết |
-|-----------|---------|
-| **Rapid prototyping** | Build chat UI trong 1-2 ngày |
-| **Python native** | Không cần frontend expertise (React, Vue, ...) |
-| **Built-in chat** | `st.chat_message`, `st.chat_input` — chat UI sẵn |
-| **Streaming support** | `st.write_stream()` cho streaming response |
-| **Limitation** | Không phù hợp production — chuyển sang React ở Phase 3 |
+# Download BIRD training data
+dataset = load_dataset("xu3kev/BIRD-SQL-data-train")
+train_data = dataset["train"]
 
-### 6. Embedding: bge-large-en-v1.5 → bge-m3
+# Each example:
+# {
+#   "db_id": "video_games",
+#   "question": "List publishers with sales < 10000",
+#   "SQL": "SELECT DISTINCT T5.publisher_name ...",
+#   "evidence": "num_sales < 0.1 means less than 10000",
+#   "schema": "CREATE TABLE genre (...); CREATE TABLE game (...); ..."
+# }
+```
 
-| Model | Multilingual | Retrieval mode | Dimension | Phù hợp |
-|-------|-------------|---------------|-----------|---------|
-| **bge-large-en-v1.5** (hiện tại) | Chỉ English | Dense only | 1024 | POC ban đầu |
-| **bge-m3** (upgrade) | 100+ ngôn ngữ (Vietnamese) | Dense + Sparse + ColBERT | 1024 | Khi cần hỗ trợ tiếng Việt tốt hơn |
+**BIRD SQLite database files:**
+- Cần download riêng (không có trên HuggingFace dataset này)
+- Source: BIRD benchmark official (bird-bench.github.io)
+- Chứa actual data để execute SQL queries
+- Bắt buộc cho execution-based evaluation
 
-**Lộ trình upgrade:**
-- Phase 1 ban đầu: giữ bge-large-en-v1.5 (đã setup)
-- Phase 1 giữa/cuối: upgrade sang bge-m3 khi thấy retrieval accuracy thấp cho câu hỏi tiếng Việt
+### 4. Vector DB: ChromaDB (Multi-database)
+
+Giữ ChromaDB nhưng mở rộng cho multi-database:
+
+| Khía cạnh | Single-DB (banking) | Multi-DB (BIRD) |
+|-----------|-------------------|-----------------|
+| **Collections** | 2 (schema_chunks, examples) | 2 (cùng, nhưng lớn hơn) |
+| **Metadata** | Không filter | Filter by `db_id`, `split` |
+| **Số documents** | ~50 | ~500-2000 |
+| **Query pattern** | Simple similarity | Similarity + metadata filter |
+
+```python
+# Multi-database query with metadata filter
+results = collection.query(
+    query_embeddings=[question_embedding],
+    n_results=5,
+    where={"db_id": "video_games"}  # Filter by database
+)
+```
+
+ChromaDB vẫn đủ cho quy mô này (~2000 docs). Chuyển sang pgvector ở Phase 2 khi consolidate infrastructure.
+
+### 5. Framework: Claude Tool Use (Native)
+
+Không thay đổi — single agent + 3 tools vẫn đủ đơn giản cho native tool use.
+
+Giảm từ 4 tools xuống 3 (bỏ `get_metric_definition`):
+- `execute_sql` — execute trên SQLite (thay PostgreSQL)
+- `search_schema` — vector search filtered by db_id
+- `get_column_values` — DISTINCT values từ SQLite
+
+### 6. API: FastAPI + UI: Streamlit
+
+Không thay đổi stack, chỉ thêm features:
+- **FastAPI:** Thêm `db_id` parameter vào API contract
+- **Streamlit:** Thêm database selector dropdown, evaluation dashboard
+
+---
+
+## Dependencies Mới
+
+```
+# requirements.txt — additions
+datasets>=2.16.0        # HuggingFace datasets (download BIRD)
+# sqlite3               # Python standard library — no install needed
+```
+
+**Dependencies đã loại bỏ (so với banking version):**
+
+```
+# Không còn cần:
+# asyncpg              # PostgreSQL async driver (thay bằng sqlite3)
+# psycopg2             # PostgreSQL driver
+# Faker                # Data generation (dùng BIRD data thay vì gen)
+```
 
 ---
 
 ## Những Gì KHÔNG Có Trong Phase 1
 
-So với Phase 2 (Pattern 1) và Phase 3 (Pattern 3), stack Phase 1 thiếu:
-
-| Component | Phase 1 (Pattern 2) | Phase 2+ (Pattern 1/3) | Lý do không cần |
-|-----------|---------------------|----------------------|----------------|
-| **LangGraph** | Không | Có | Single agent không cần orchestration |
-| **Redis** | Không | Có | Chưa cần caching cho R&D |
-| **Langfuse** | Không | Có | Chưa cần LLM monitoring phức tạp. Print logs đủ |
-| **Claude Opus** | Không | Có (fallback) | Sonnet đủ cho R&D. Opus chỉ cần cho L3-L4 queries |
-| **Claude Haiku** | Không | Có (router) | Không có router riêng |
-| **Nginx** | Không | Có (Phase 3) | Không cần reverse proxy cho dev |
-| **React** | Không | Có (Phase 3) | Streamlit đủ cho POC |
-| **Prometheus + Grafana** | Không | Có (Phase 3) | Chưa cần system monitoring |
+| Component | Có trong Phase 1? | Khi nào cần? | Lý do không cần |
+|-----------|-------------------|-------------|----------------|
+| **PostgreSQL** | Không (dùng SQLite) | Phase 2 production | BIRD = SQLite native |
+| **LangGraph** | Không | Phase 2 multi-component | Single agent đủ |
+| **Redis** | Không | Phase 2 caching | R&D không cần cache |
+| **Langfuse** | Không | Phase 2 monitoring | Eval Engine log đủ |
+| **Claude Opus** | Không | Phase 2 complex queries | Sonnet đủ cho benchmark |
+| **Claude Haiku** | Không | Phase 3 router | Không có router |
+| **React** | Không | Phase 3 production UI | Streamlit đủ POC |
+| **Nginx/Prometheus** | Không | Phase 3 production | Không cần infra monitoring |
 
 ---
 
@@ -176,32 +203,33 @@ So với Phase 2 (Pattern 1) và Phase 3 (Pattern 3), stack Phase 1 thiếu:
 
 ```mermaid
 graph LR
-    subgraph Phase1["Phase 1: R&D (Pattern 2)"]
+    subgraph Phase1["Phase 1: R&D — BIRD Evaluation"]
         P1_LLM["Claude Sonnet"]
         P1_FW["Claude Tool Use<br/>(native)"]
-        P1_VDB["ChromaDB"]
-        P1_UI["Streamlit"]
+        P1_DB["SQLite<br/>(BIRD databases)"]
+        P1_VDB["ChromaDB<br/>(multi-db metadata)"]
+        P1_UI["Streamlit<br/>+ DB selector"]
         P1_EMB["bge-large-en"]
-        P1_API["FastAPI"]
+        P1_DATA["HuggingFace Datasets"]
+        P1_EVAL["Evaluation Engine"]
     end
 
-    subgraph Phase2["Phase 2: POC (Pattern 1)"]
+    subgraph Phase2["Phase 2: POC — Production DB"]
         P2_LLM["+ Claude Opus<br/>(complex queries)"]
         P2_FW["LangGraph<br/>(orchestration)"]
+        P2_DB["PostgreSQL 18<br/>(production data)"]
         P2_VDB["pgvector<br/>(consolidate)"]
-        P2_UI["Streamlit<br/>(enhanced)"]
-        P2_EMB["bge-m3<br/>(multilingual)"]
         P2_MON["+ Langfuse<br/>+ Redis"]
     end
 
-    subgraph Phase3["Phase 3: Prod (Pattern 3)"]
+    subgraph Phase3["Phase 3: Production"]
         P3_LLM["+ Claude Haiku<br/>(router)"]
         P3_FW["LangGraph<br/>(multi-tier)"]
-        P3_UI["React + Tailwind<br/>(production)"]
+        P3_UI["React + Tailwind"]
         P3_MON["+ Prometheus<br/>+ Grafana<br/>+ Nginx"]
     end
 
-    Phase1 -->|"Refactor"| Phase2
+    Phase1 -->|"Migrate DB<br/>SQLite → PG"| Phase2
     Phase2 -->|"Scale"| Phase3
 
     style Phase1 fill:#fff9c4,stroke:#f9a825,stroke-width:2px
@@ -209,23 +237,41 @@ graph LR
     style Phase3 fill:#e3f2fd,stroke:#1565c0
 ```
 
-**Nguyên tắc tiến hoá:**
-- Phase 1 code **không bỏ đi** — RAG retrieval module trở thành Schema Linker, agent prompt trở thành SQL Generator prompt
-- Thêm components mới (LangGraph, Redis, Langfuse) thay vì rewrite
-- Vector store consolidate (ChromaDB → pgvector) để giảm infra
-- UI rewrite (Streamlit → React) là thay đổi lớn nhất — nhưng chỉ ở Phase 3 production
+**Lộ trình migration SQLite → PostgreSQL (Phase 1 → Phase 2):**
+
+```
+Phase 1 (BIRD eval):
+  - SQLite databases (BIRD benchmark)
+  - SQLite SQL syntax
+  - Execution accuracy evaluation
+
+Phase 2 (Production):
+  - Migrate sang PostgreSQL (business data)
+  - Thay đổi system prompt: SQLite syntax → PG syntax
+  - Thay đổi execute_sql tool: sqlite3 → asyncpg
+  - Thay đổi schema chunking: từ BIRD DDL → production schema
+  - Giữ nguyên: agent architecture, RAG pipeline, evaluation framework
+
+Code cần thay đổi khi migrate:
+  - src/tools/execute_sql.py (sqlite3 → asyncpg)
+  - src/config.py (thêm PG connection settings)
+  - config/prompts/system_prompt.txt (SQLite → PG syntax rules)
+  - scripts/index_schema.py (schema source)
+  Phần còn lại (agent, RAG, evaluation) giữ nguyên.
+```
 
 ---
 
-## Ước Lượng Infrastructure Cost (Phase 1)
+## Ước Lượng Infrastructure Cost (Phase 1 — BIRD Eval)
 
 | Resource | Cost/tháng | Ghi chú |
 |----------|-----------|---------|
-| **Claude API** | ~$50-150 | 50-100 queries/ngày × 30 ngày × ~$0.03/query |
-| **PostgreSQL** | $0 | Đã có (existing infrastructure) |
+| **Claude API** | ~$100-300 | BIRD eval: 9,430 questions × ~$0.03/query (1 lần eval ~$280). Iterative testing thêm |
+| **SQLite** | $0 | Embedded, no server needed |
 | **ChromaDB** | $0 | Local/in-process |
+| **HuggingFace** | $0 | Free dataset download |
 | **Streamlit** | $0 | Local development |
 | **Server** | $0-50 | Local dev hoặc 1 small VM |
-| **Tổng** | **~$50-200/tháng** | Minimal cost cho R&D |
+| **Tổng** | **~$100-350/tháng** | Chủ yếu là Claude API cost cho evaluation runs |
 
-So với Phase 2+ cần thêm Redis, Langfuse, larger VM → cost tăng lên ~$300-500/tháng.
+**Lưu ý:** Mỗi lần chạy full BIRD evaluation (9,430 questions) tốn ~$280 Claude API. Nên test trên subset nhỏ trước khi chạy full benchmark.
