@@ -1,39 +1,42 @@
-# Text-to-SQL Agent Platform — Banking/POS
+# Text-to-SQL Agent — BIRD Multi-Database Evaluation
 
-A RAG-enhanced LLM agent that converts natural language questions (Vietnamese/English) into SQL queries for Banking/POS databases.
+A RAG-enhanced LLM agent that converts natural language questions into SQL queries, evaluated on the [BIRD-SQL benchmark](https://bird-bench.github.io/) across 70+ diverse databases.
 
 ## Architecture — Phase 1: RAG-Enhanced Single Agent (Pattern 2)
 
 ```
-User Question (Vietnamese/English)
+User Question + db_id
     |
     v
 [REST API / Streamlit UI]
     |
     v
 [Step 1] RAG Retrieval (deterministic, no LLM)
-    |-- Vector search schema chunks (ChromaDB)
-    |-- Vector search similar examples (few-shot)
-    |-- Keyword match metric definitions
+    |-- Vector search schema chunks (ChromaDB, filtered by db_id)
+    |-- Vector search similar examples (BIRD train split, filtered by db_id)
+    |-- Lookup evidence (BIRD domain hints)
     |
     v
 [Step 2] Prompt Build
-    |-- System prompt + RAG context injected
+    |-- System prompt + schema + evidence + examples injected
+    |-- SQLite syntax enforced
     |
     v
 [Step 3] LLM Agent (tool use loop) — provider-agnostic
-    |-- Tools: execute_sql, search_schema, get_metric, get_column_values
+    |-- Tools: execute_sql (SQLite), search_schema, get_column_values
     |-- ReAct loop: reason -> act -> observe -> repeat
     |-- Supports: Claude, GPT-4o, Groq, Ollama, vLLM
     |
     v
 [Step 4] Response
-    |-- SQL generated
+    |-- SQL generated (SQLite syntax)
     |-- Query results (rows/columns)
     |-- Natural language explanation
     |
     v
-[Step 5] Audit Logging (compliance)
+[Step 5] Evaluation (optional)
+    |-- Compare generated SQL results vs BIRD ground truth
+    |-- Execution accuracy metric
 ```
 
 ## Tech Stack
@@ -42,21 +45,12 @@ User Question (Vietnamese/English)
 |-----------|-----------|
 | LLM | Multi-provider: Claude, GPT-4o, Groq, Ollama, vLLM (pluggable via config) |
 | Embedding | SentenceTransformer (BAAI/bge-large-en-v1.5) |
-| Vector DB | ChromaDB (persistent) |
-| Database | PostgreSQL 18 + pgvector |
+| Vector DB | ChromaDB (persistent, per-db metadata filtering) |
+| Database | SQLite (BIRD benchmark databases, read-only) |
+| Dataset | BIRD-SQL (HuggingFace: xu3kev/BIRD-SQL-data-train) |
 | API | FastAPI (async, WebSocket) |
-| UI | Streamlit (POC) |
+| UI | Streamlit (POC, with database selector) |
 | Language | Python 3.11+ |
-
-### Supported LLM Providers
-
-| Provider | `LLM_PROVIDER` | `LLM_BASE_URL` | Tool Use |
-|----------|----------------|-----------------|----------|
-| Anthropic (Claude) | `anthropic` | — | Native |
-| OpenAI (GPT-4o) | `openai` | — | Native |
-| Groq (Llama 3) | `openai` | `https://api.groq.com/openai/v1` | Native |
-| Ollama (local) | `openai` | `http://localhost:11434/v1` | Model-dependent |
-| vLLM (self-hosted) | `openai` | `http://localhost:8000/v1` | Model-dependent |
 
 ## Project Structure
 
@@ -73,34 +67,44 @@ src/
 │   └── factory.py       # Factory: config -> provider instance
 ├── api/                 # REST API + WebSocket
 │   ├── app.py           # FastAPI with lifespan
-│   ├── routes.py        # POST /api/query, GET /api/health, POST /api/feedback
+│   ├── routes.py        # POST /api/query, GET /api/health
 │   └── websocket.py
 ├── rag/                 # RAG retrieval pipeline
-│   ├── retrieval.py     # Vector search + metric matching
+│   ├── retrieval.py     # Vector search + evidence lookup (db_id aware)
 │   ├── embedding.py     # SentenceTransformer wrapper
-│   └── chunking.py      # Domain-clustered schema chunking (7 clusters)
-├── knowledge/           # Semantic metadata
-│   ├── semantic_layer.py  # 15+ metrics, aliases, sensitive columns
-│   ├── vector_store.py    # ChromaDB wrapper
-│   └── example_store.py   # 40+ golden queries
-├── tools/               # 4 agent tools
-│   ├── execute_sql.py     # Safe SQL execution (read-only, DML blocking, auto LIMIT)
-│   ├── search_schema.py   # Vector search for schema info
-│   ├── get_metric.py      # Business metric lookup
-│   └── get_column_values.py  # DISTINCT value enumeration
+│   └── chunking.py      # Dynamic schema chunking per database
+├── knowledge/           # Knowledge stores
+│   ├── vector_store.py    # ChromaDB wrapper (multi-db metadata)
+│   ├── example_store.py   # BIRD train split examples
+│   └── evidence_store.py  # BIRD evidence per question
+├── tools/               # 3 agent tools
+│   ├── execute_sql.py     # Safe SQL execution (SQLite, read-only, auto LIMIT)
+│   ├── search_schema.py   # Vector search for schema info (per db_id)
+│   └── get_column_values.py  # DISTINCT value enumeration (SQLite)
 ├── data_access/         # Database layer
-│   ├── connection.py    # Async PostgreSQL pool (read-only enforced)
-│   └── audit.py         # Compliance audit logging
+│   ├── db_registry.py   # Database Registry: db_id -> SQLite path
+│   └── audit.py         # Audit logging
+├── evaluation/          # BIRD evaluation framework
+│   ├── engine.py        # Execution accuracy evaluation
+│   ├── splitter.py      # Train/test split with strict isolation
+│   └── report.py        # Per-database and overall metrics
 ├── models/schemas.py    # Pydantic models
 ├── config.py            # Settings (env-based)
-└── session_logger.py    # Per-session file logging for tracing
+└── session_logger.py    # Per-session file logging
 
-tests/                   # 92 tests (unit + E2E)
-config/                  # Semantic layer YAML, golden queries JSON, prompts
-data/                    # Schema metadata, sample queries
-ui/                      # Streamlit chat UI
-scripts/                 # DB init, schema indexing, evaluation
-docker/                  # PostgreSQL + pgvector
+data/bird/               # BIRD benchmark data
+├── databases/           # SQLite files (70+ databases)
+│   ├── video_games/video_games.sqlite
+│   ├── car_retails/car_retails.sqlite
+│   └── ...
+├── train.json           # Full BIRD dataset
+├── train_split.json     # Few-shot subset (indexed into ChromaDB)
+└── test_split.json      # Evaluation subset (NEVER indexed)
+
+tests/                   # Unit + E2E tests
+config/                  # Prompts, placeholder semantic layer
+scripts/                 # Data pipeline, schema indexing, evaluation
+ui/                      # Streamlit chat UI with database selector
 ```
 
 ## Quick Start
@@ -108,152 +112,120 @@ docker/                  # PostgreSQL + pgvector
 ### Prerequisites
 
 - Python 3.11+
-- Docker Desktop (for PostgreSQL)
 - LLM API key (Anthropic, OpenAI, Groq, or local Ollama/vLLM)
+- BIRD SQLite database files
 
 ### 1. Install dependencies
 
 ```bash
 pip install -e ".[dev]"
-pip install psycopg2-binary faker
+pip install datasets   # HuggingFace datasets for BIRD
 ```
 
-### 2. Start PostgreSQL
+### 2. Download BIRD dataset
 
 ```bash
-cd docker
-docker compose up -d
+python -m scripts.download_bird
+# Downloads: HuggingFace dataset + SQLite database files
+# Creates: data/bird/databases/, data/bird/train.json
 ```
 
-### 3. Configure environment
+### 3. Split train/test + index schemas
 
-Edit `.env` — choose your LLM provider:
+```bash
+# Split BIRD examples into train (~10%) / test (~90%) per database
+# Index schema chunks + train examples into ChromaDB
+python -m scripts.index_schema
+```
+
+### 4. Configure environment
+
+Edit `.env`:
 ```env
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=test_db
-DB_USER=test_db_user
-DB_PASSWORD=test_db_password
-
-# Option 1: Anthropic Claude (default)
+# LLM Provider
 LLM_PROVIDER=anthropic
 LLM_API_KEY=sk-ant-your-key-here
 LLM_MODEL=claude-sonnet-4-6
 
-# Option 2: Groq (fast, free tier available)
-# LLM_PROVIDER=openai
-# LLM_API_KEY=gsk_your_groq_key
-# LLM_BASE_URL=https://api.groq.com/openai/v1
-# LLM_MODEL=llama-3.3-70b-versatile
-
-# Option 3: Ollama (local, free)
-# LLM_PROVIDER=openai
-# LLM_API_KEY=ollama
-# LLM_BASE_URL=http://localhost:11434/v1
-# LLM_MODEL=llama3.1
+# BIRD Data
+BIRD_DB_DIR=./data/bird/databases
+BIRD_TRAIN_SPLIT=./data/bird/train_split.json
+BIRD_TEST_SPLIT=./data/bird/test_split.json
 
 EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
 CHROMA_PERSIST_DIR=./chroma_db
 ```
 
-### 4. Generate sample data + init DB
-
-```bash
-# Create tables and seed Banking/POS data
-python gen_data.py
-
-# Create audit tables + read-only role
-psql -h localhost -U test_db_user -d test_db -f scripts/init_db.sql
-```
-
-### 5. Index schema into ChromaDB
-
-```bash
-python -m scripts.index_schema
-```
-
-### 6. Run API server
+### 5. Run API server
 
 ```bash
 uvicorn src.api.app:app --reload --port 8000
 ```
 
-### 7. Use it
+### 6. Use it
 
 **Option A — curl:**
 ```bash
 curl -X POST http://localhost:8000/api/query \
   -H "Content-Type: application/json" \
-  -d '{"question": "Tong doanh thu thang 3?"}'
+  -d '{"question": "How many games per genre?", "db_id": "video_games"}'
 ```
 
 **Option B — Streamlit UI:**
 ```bash
 streamlit run ui/streamlit_app.py
+# Select database from dropdown, then ask questions
 ```
 
-**Option C — Health check:**
-```bash
-curl http://localhost:8000/api/health
-```
-
-## Running Tests
+### 7. Run evaluation
 
 ```bash
-# Unit tests (no external dependencies needed)
-pytest tests/ -v
+# Evaluate on BIRD test split (execution accuracy)
+python -m scripts.evaluate --split test
 
-# E2E tests (requires running PostgreSQL + Anthropic API key)
-pytest tests/test_e2e.py -v
+# Evaluate on specific database
+python -m scripts.evaluate --split test --db_id video_games
+
+# Quick test on small subset
+python -m scripts.evaluate --split test --limit 50
 ```
 
-## Session Logging
+## Evaluation
 
-Each API request creates a separate log file in `logs/` for tracing:
+### Execution Accuracy (EX)
+
+The primary metric: does the generated SQL return the **same result set** as the BIRD ground truth SQL?
 
 ```
-logs/session_a1b2c3d4e5f6_20260326_103001.log
+For each (question, db_id, ground_truth_sql) in test_split:
+  1. Run question through agent pipeline → generated_sql
+  2. Execute generated_sql on db_id.sqlite → generated_result
+  3. Execute ground_truth_sql on db_id.sqlite → expected_result
+  4. Match = (set(generated_result) == set(expected_result))
 ```
 
-Example log output:
-```
-================================================================================
-SESSION: a1b2c3d4e5f6
-TIME:    2026-03-26 10:30:01.123
-QUESTION: Tong doanh thu thang 3?
-================================================================================
-[2026-03-26 10:30:01.123] [STEP 1/5] [RAG_RETRIEVAL] Retrieving context...
-[2026-03-26 10:30:01.130] [STEP 1/5] [RAG_RETRIEVAL] Question embedded, dim=1024 (7ms)
-[2026-03-26 10:30:01.155] [STEP 1/5] [RAG_RETRIEVAL] Schema vector search: 5 chunks (25ms)
-[2026-03-26 10:30:01.170] [STEP 1/5] [RAG_RETRIEVAL] Example vector search: 3 examples (15ms)
-[2026-03-26 10:30:01.172] [STEP 1/5] [RAG_RETRIEVAL] Metric keyword match: ['doanh_thu'] (2ms)
-[2026-03-26 10:30:01.174] [STEP 2/5] [PROMPT_BUILD] System prompt length: 2048 chars (1ms)
-[2026-03-26 10:30:02.500] [STEP 3/5] [LLM_CALL] Iteration 1: stop_reason=tool_use, tokens=850 (1324ms)
-[2026-03-26 10:30:02.501] [STEP 3/5] [TOOL_DISPATCH] execute_sql -> input: {"sql": "SELECT SUM..."}
-[2026-03-26 10:30:02.800] [STEP 3/5] [TOOL_RESULT] execute_sql -> 1 rows, 299ms (299ms)
-[2026-03-26 10:30:03.100] [STEP 3/5] [LLM_CALL] Iteration 2: stop_reason=end_turn, tokens=200 (300ms)
-[2026-03-26 10:30:03.101] [STEP 4/5] [RESPONSE] status=success, sql=yes
-[2026-03-26 10:30:03.102] [STEP 5/5] [COMPLETE] status=success, tokens=1050, tool_calls=1 (total: 1979ms)
-================================================================================
-```
+### Train/Test Isolation
+
+**Critical rule**: Test questions are NEVER used as few-shot examples.
+
+- Train split (~10%): Indexed into ChromaDB, used for few-shot retrieval
+- Test split (~90%): Used ONLY for evaluation, never indexed
 
 ## Safety Features
 
-- **Read-only enforcement**: Connection pool sets `default_transaction_read_only = on`
+- **Read-only enforcement**: SQLite opened with `?mode=ro`
 - **DML blocking**: INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE blocked at tool level
 - **Auto LIMIT**: Queries without LIMIT get `LIMIT 1000` appended
-- **Sensitive column blocking**: CVV, card_number, DOB, email columns cannot be enumerated
-- **SQL injection prevention**: Table/column names validated (alphanumeric + underscore only)
-- **Statement timeout**: 30s default to prevent long-running queries
-- **Audit logging**: Every query logged for Banking compliance
+- **SQL injection prevention**: Table/column names validated
+- **Per-database isolation**: Each db_id routes to its own SQLite file
 
 ## API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/query` | Ask a question, get SQL + results + explanation |
+| POST | `/api/query` | Ask a question (requires `question` + `db_id`) |
 | GET | `/api/health` | Health check |
-| POST | `/api/feedback` | Submit correction for wrong SQL |
+| GET | `/api/databases` | List available databases |
 | WS | `/ws/query` | WebSocket streaming |
 
 ### POST /api/query
@@ -261,7 +233,8 @@ QUESTION: Tong doanh thu thang 3?
 **Request:**
 ```json
 {
-  "question": "Tong doanh thu thang 3?"
+  "question": "How many games per genre?",
+  "db_id": "video_games"
 }
 ```
 
@@ -269,27 +242,30 @@ QUESTION: Tong doanh thu thang 3?
 ```json
 {
   "status": "success",
-  "sql": "SELECT SUM(total_amount) FROM sales WHERE created_at >= '2026-03-01'",
+  "db_id": "video_games",
+  "sql": "SELECT g.genre_name, COUNT(*) AS cnt FROM game ga JOIN genre g ON ga.genre_id = g.id GROUP BY g.genre_name ORDER BY cnt DESC",
   "results": {
-    "columns": ["sum"],
-    "rows": [[1500000.00]],
-    "row_count": 1
+    "columns": ["genre_name", "cnt"],
+    "rows": [["Action", 210], ["Sports", 180]],
+    "row_count": 12
   },
-  "explanation": "Tong doanh thu thang 3 la 1,500,000 VND",
+  "explanation": "Action genre has the most games (210), followed by Sports (180)...",
   "metadata": {
-    "latency_ms": 1979,
+    "latency_ms": 3200,
     "tool_calls": 1,
-    "tokens": 1050
+    "tokens": 950
   }
 }
 ```
 
 ## Architecture Documentation
 
-Detailed architecture docs are in `docs/03_Technical_Assessment/`:
+Detailed architecture docs: `docs/03_Technical_Assessment/pattern_2_rag_single_agent/`
 
-| Phase | Pattern | Status |
-|-------|---------|--------|
-| Phase 1 (R&D) | RAG-Enhanced Single Agent | **Implemented** |
-| Phase 2 (POC) | LLM-in-the-middle Pipeline | Planned |
-| Phase 3 (Production) | Adaptive Router + Tiered Agents | Planned |
+| Doc | Content |
+|-----|---------|
+| `01_design_pattern.md` | RAG + ReAct + Tool-Augmented Agent pattern |
+| `02_components.md` | All components across 5 layers + Pipeline & Eval |
+| `03_architecture_flow.md` | Data flow, evaluation flow, pipeline flow |
+| `04_sequence_diagrams.md` | 6 sequence diagrams (happy path, multi-tool, error, streaming, eval, pipeline) |
+| `05_tech_stack.md` | SQLite, ChromaDB, Claude, HuggingFace Datasets |

@@ -29,7 +29,7 @@
 ## PHASE 1: RESEARCH & DISCOVERY (8-12 TUẦN)
 
 ### Mục tiêu
-Validate tính khả thi kỹ thuật và xác định kiến trúc tối ưu cho domain banking/POS.
+Validate tính khả thi kỹ thuật trên BIRD-SQL benchmark (70+ databases) và xác định kiến trúc tối ưu.
 
 ### Timeline Chi tiết
 
@@ -42,7 +42,7 @@ Tuần 1-2    ┃ Kickoff & Team Formation
             ┃
 Tuần 3-4    ┃ Technology Evaluation
             ┃ ├── Benchmark LLM models (Claude, GPT-4, DeepSeek, Qwen)
-            ┃ │   trên schema banking hiện có (14 tables)
+            ┃ │   trên BIRD-SQL benchmark (70+ databases)
             ┃ ├── Evaluate RAG strategies: simple chunking vs semantic layer
             ┃ ├── Test Vector DB options: ChromaDB vs Qdrant vs pgvector
             ┃ └── Evaluate embedding models cho Vietnamese support

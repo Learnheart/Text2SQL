@@ -1,28 +1,28 @@
-# Text-to-SQL Agent Platform — Banking/POS
+# Text-to-SQL Agent Platform — BIRD Benchmark Evaluation
 
-Convert natural language questions (Vietnamese/English) into SQL queries for Banking/POS databases using LLM agents.
+Convert natural language questions into SQL queries using LLM agents, evaluated on the [BIRD-SQL benchmark](https://bird-bench.github.io/) (70+ databases, 9,430+ examples).
 
 ## Architecture Patterns
 
 Each pattern is a self-contained project in its own folder, representing a different phase of development.
 
-| Phase | Pattern | Folder | Status |
-|-------|---------|--------|--------|
-| Phase 1 (R&D) | RAG-Enhanced Single Agent | [`rag_single_agent/`](rag_single_agent/) | Implemented |
-| Phase 2 (POC) | LLM-in-the-middle Pipeline | `llm_pipeline/` | Planned |
-| Phase 3 (Production) | Adaptive Router + Tiered Agents | `adaptive_router/` | Planned |
+| Phase | Pattern | Folder | Database | Status |
+|-------|---------|--------|----------|--------|
+| Phase 1 (R&D) | RAG-Enhanced Single Agent | [`rag_single_agent/`](rag_single_agent/) | SQLite (BIRD) | Implemented |
+| Phase 2 (POC) | LLM-in-the-middle Pipeline | `llm_pipeline/` | PostgreSQL | Planned |
+| Phase 3 (Production) | Adaptive Router + Tiered Agents | `adaptive_router/` | PostgreSQL | Planned |
 
 ### Pattern 1 — RAG Single Agent (Phase 1)
 
-Single LLM agent with 4 tools + RAG context injection. Simple, fast to build.
+Single LLM agent with 3 tools + RAG context injection. Evaluated on BIRD benchmark with execution accuracy.
 
 ```
-Question → RAG Retrieval → LLM Agent (tool use loop) → SQL + Results
+Question + db_id → RAG Retrieval (per db_id) → LLM Agent (tool use loop) → SQL + Results
 ```
 
 ### Pattern 2 — LLM Pipeline (Phase 2)
 
-Deterministic pipeline with LLM only at SQL generation step. More control, better accuracy.
+Deterministic pipeline with LLM only at SQL generation step. More control, better accuracy. Migrates to PostgreSQL.
 
 ```
 Question → Router → Schema Linker → SQL Generator (LLM) → Validator → Executor
@@ -50,6 +50,7 @@ Detailed design docs for all 3 patterns: [`docs/03_Technical_Assessment/`](docs/
 ## Tech Stack
 
 - **LLM:** Multi-provider (Anthropic, OpenAI, Groq, Ollama, vLLM)
-- **Database:** PostgreSQL 18 + pgvector
+- **Database:** SQLite (BIRD evaluation) → PostgreSQL 18 (production)
+- **Benchmark:** BIRD-SQL (9,430+ examples, 70+ databases)
 - **Language:** Python 3.11+
 - **API:** FastAPI

@@ -1,6 +1,6 @@
 # Sequence Diagrams — LLM-in-the-middle Pipeline
 
-### Các sequence diagram chi tiết cho mỗi luồng xử lý | Text-to-SQL Agent Platform (Banking/POS)
+### Các sequence diagram chi tiết cho mỗi luồng xử lý | Text-to-SQL Agent Platform (BIRD → Production)
 
 ---
 
@@ -216,16 +216,16 @@ sequenceDiagram
     RT->>RT: Keyword match: "xin chào" → chitchat pattern
     RT->>RT: Confidence: 0.99
     RT-->>API: RouterResult{intent: CHITCHAT,<br/>confidence: 0.99}
-    API-->>U: 200 OK<br/>{status: "chitchat",<br/>message: "Xin chào! Tôi là Text-to-SQL Assistant,<br/>chuyên hỗ trợ truy vấn dữ liệu Banking/POS.<br/>Bạn có thể hỏi tôi về doanh thu, giao dịch,<br/>merchant, v.v.",<br/>suggestions: ["Tổng doanh thu hôm nay?",<br/>"Top 5 merchant?", "Số giao dịch tháng này?"]}
+    API-->>U: 200 OK<br/>{status: "chitchat",<br/>message: "Xin chào! Tôi là Text-to-SQL Assistant,<br/>chuyên hỗ trợ truy vấn dữ liệu từ database.<br/>Bạn có thể hỏi tôi bất kỳ câu hỏi nào<br/>về dữ liệu trong database được chỉ định.",<br/>suggestions: ["How many games per genre?",<br/>"Top 5 publishers?", "Average rating?"]}
 
     Note over U,RT: === TRƯỜNG HỢP 2: OUT-OF-SCOPE ===
     U->>API: POST /api/query<br/>{"question": "Thời tiết Hà Nội hôm nay?"}
     API->>RT: route("Thời tiết Hà Nội hôm nay?")
     RT->>RT: Keyword check: không match SQL, chitchat, domain
-    RT->>RT: Domain check: không chứa keyword Banking/POS
+    RT->>RT: Domain check: không chứa keyword database/SQL
     RT->>RT: Confidence: 0.90
     RT-->>API: RouterResult{intent: OUT_OF_SCOPE,<br/>confidence: 0.90}
-    API-->>U: 200 OK<br/>{status: "out_of_scope",<br/>message: "Xin lỗi, tôi chỉ có thể hỗ trợ các câu hỏi<br/>liên quan đến dữ liệu Banking/POS.<br/>Ví dụ: doanh thu, giao dịch, merchant, tài khoản.",<br/>suggestions: ["Tổng doanh thu tháng này?",<br/>"Merchant nào có nhiều giao dịch nhất?"]}
+    API-->>U: 200 OK<br/>{status: "out_of_scope",<br/>message: "Xin lỗi, tôi chỉ có thể hỗ trợ các câu hỏi<br/>liên quan đến dữ liệu trong database.<br/>Ví dụ: thống kê, tổng hợp, phân tích dữ liệu.",<br/>suggestions: ["How many records?",<br/>"Top 10 by count?"]}
 
     Note over U,RT: === TRƯỜNG HỢP 3: CLARIFICATION ===
     U->>API: POST /api/query<br/>{"question": "giao dịch"}

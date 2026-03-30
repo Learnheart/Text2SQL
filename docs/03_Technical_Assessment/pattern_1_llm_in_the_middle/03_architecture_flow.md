@@ -1,6 +1,6 @@
 # Luồng Architecture Tổng Thể — LLM-in-the-middle Pipeline
 
-### Kiến trúc hệ thống và data flow chi tiết | Text-to-SQL Agent Platform (Banking/POS)
+### Kiến trúc hệ thống và data flow chi tiết | Text-to-SQL Agent Platform (BIRD → Production)
 
 ---
 
@@ -61,7 +61,7 @@ graph TB
     subgraph "LAYER 4 — DATA ACCESS"
         direction LR
         CP["Connection Pool<br/>asyncpg<br/>min=2, max=10"]
-        AL["Audit Logger<br/>Who, What, When<br/>Banking Compliance"]
+        AL["Audit Logger<br/>Who, What, When<br/>Compliance + Eval Tracking"]
         CACHE["Redis Cache<br/>Query + Session"]
     end
 
@@ -486,4 +486,4 @@ Kiến trúc LLM-in-the-middle Pipeline có các đặc điểm:
 - **Self-correction loop** tự động sửa lỗi, tối đa 3 lần retry
 - **Knowledge Layer boot 1 lần** (~5-8s), runtime per-query ~1.5s (happy path)
 - **Streaming** cho 2 bước LLM (SQL Generation và Insight), các bước khác trả kết quả ngay
-- **Audit trail đầy đủ** tại mỗi bước — phù hợp compliance domain Banking
+- **Audit trail đầy đủ** tại mỗi bước — phù hợp compliance và evaluation tracking

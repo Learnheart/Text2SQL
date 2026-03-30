@@ -1,6 +1,6 @@
 # Design Pattern — LLM-in-the-middle Pipeline
 
-### Pattern Analysis cho Text-to-SQL Agent Platform (Banking/POS)
+### Pattern Analysis cho Text-to-SQL Agent Platform (BIRD benchmark → Production)
 
 ---
 
@@ -13,7 +13,7 @@
 5. [Mối quan hệ giữa 3 Patterns](#5-mối-quan-hệ-giữa-3-patterns)
 6. [Khái niệm LLM-in-the-middle](#6-khái-niệm-llm-in-the-middle)
 7. [Self-Correction Loop Pattern](#7-self-correction-loop-pattern)
-8. [Lợi ích trong domain Banking](#8-lợi-ích-trong-domain-banking)
+8. [Lợi ích trong Production deployment](#8-lợi-ích-trong-production-deployment)
 
 ---
 
@@ -344,17 +344,19 @@ Attempt: 2/3
 
 ---
 
-## 8. LỢI ÍCH TRONG DOMAIN BANKING
+## 8. LỢI ÍCH TRONG PRODUCTION DEPLOYMENT
 
-### 8.1 Tại sao pattern combination này phù hợp đặc biệt cho Banking/POS?
+### 8.1 Tại sao pattern combination này phù hợp cho production Text-to-SQL?
 
-| Yêu cầu Banking | Pattern đáp ứng | Cách đáp ứng |
+Phase 2 sẽ migrate từ SQLite (BIRD eval) sang PostgreSQL (production), áp dụng BIRD benchmark insights vào production pipeline.
+
+| Yêu cầu Production | Pattern đáp ứng | Cách đáp ứng |
 |-----------------|-----------------|---------------|
 | **Accuracy cao** | Pipes and Filters + Self-Correction | Mỗi bước kiểm tra, sai thì retry, đảm bảo SQL chính xác trước khi execute |
 | **An toàn dữ liệu** | Chain of Responsibility | Validator reject DML nguy hiểm (INSERT/UPDATE/DELETE), kiểm tra sensitive columns |
 | **Debuggability** | Mediator (LangGraph) | Mọi state transition được log, trace từ question → SQL → result |
 | **Auditability** | Pipes and Filters + Mediator | Audit trail đầy đủ: ai hỏi gì, sinh SQL gì, chạy lúc nào, kết quả gì |
-| **Compliance** | Chain of Responsibility | Sensitive columns (account_number, balance) bị flagged và xử lý đặc biệt |
+| **Multi-database** | Mediator | db_id routing xuyên suốt pipeline, Schema Linker resolve per database |
 | **Predictability** | LLM-in-the-middle | 4/5 bước là deterministic → hành vi dự đoán được, chỉ 1 bước LLM cần monitor |
 
 ### 8.2 So sánh với approach khác
@@ -378,4 +380,4 @@ Pattern combination **Pipes and Filters + Chain of Responsibility + Mediator** t
 - **Chính xác**: Self-correction loop sửa lỗi tự động, validation bắt hallucination
 - **Dễ debug**: Mỗi bước độc lập, state machine log mọi transition
 - **Dễ mở rộng**: Thêm/sửa filter không ảnh hưởng filter khác
-- **Phù hợp Banking**: Audit trail, sensitive data protection, DML restriction, compliance-ready
+- **Production-ready**: Audit trail, sensitive data protection, DML restriction, multi-database routing, BIRD-informed accuracy baseline

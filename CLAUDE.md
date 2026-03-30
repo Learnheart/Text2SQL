@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Text-to-SQL Agent Platform cho domain Banking/POS. Hệ thống cho phép người dùng nghiệp vụ đặt câu hỏi bằng ngôn ngữ tự nhiên (tiếng Việt/Anh) và nhận câu trả lời từ PostgreSQL database.
+Text-to-SQL Agent Platform đánh giá trên BIRD-SQL benchmark (70+ databases đa dạng domain). Hệ thống cho phép người dùng đặt câu hỏi bằng ngôn ngữ tự nhiên và nhận câu trả lời từ SQLite databases. Phase 1 sử dụng BIRD benchmark để đo execution accuracy trước khi migrate sang production database (PostgreSQL).
 
 ### Architecture Documentation Reference
 
@@ -163,7 +163,8 @@ Các service sau chưa được host trên Service Controller:
 Sau đó yêu cầu người dùng thêm vào controller bằng `sc infra add` trước khi tiếp tục.
 
 **Lưu ý:**
-- Project `text2sql` đã đăng ký với namespace: db `text2sql_db`, redis db `1`, ports `8010-8019`
+- Phase 1 (BIRD eval) dùng SQLite — không cần PostgreSQL infra. Chỉ cần BIRD SQLite database files tại `data/bird/databases/`
+- Phase 2+ (production) sẽ dùng PostgreSQL: namespace `text2sql_db`, redis db `1`, ports `8010-8019`
 - Kết nối từ host dùng `localhost`, từ Docker container dùng tên container (`infra-postgres`, `infra-redis`...)
 - File `.env` chứa connection strings — tham khảo `docs/integration_service_controll/` nếu cần cập nhật
 

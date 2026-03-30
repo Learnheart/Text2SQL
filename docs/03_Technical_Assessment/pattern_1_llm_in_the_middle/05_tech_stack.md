@@ -1,6 +1,6 @@
 # Tech Stack Đề Xuất — LLM-in-the-middle Pipeline
 
-### Đề xuất công nghệ cho Phase 2 (POC) | Text-to-SQL Agent Platform (Banking/POS)
+### Đề xuất công nghệ cho Phase 2 (POC) | Text-to-SQL Agent Platform (BIRD → Production)
 
 ---
 
@@ -408,7 +408,7 @@ pipeline = graph.compile()
 **5. Tại sao không chọn DeepSeek V3?**
 - Cost thấp hơn nhiều (~10x rẻ hơn Claude)
 - **Nhưng:** API reliability chưa ổn định, data privacy concern (server ở Trung Quốc)
-- Domain Banking đòi hỏi data privacy và API reliability cao
+- Production deployment đòi hỏi data privacy và API reliability cao
 - Có thể xem xét cho non-sensitive queries trong tương lai
 
 **6. Tại sao không chọn GPT-4o?**

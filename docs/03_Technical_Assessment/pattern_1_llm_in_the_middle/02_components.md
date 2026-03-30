@@ -1,6 +1,6 @@
 # Các Components Chính — LLM-in-the-middle Pipeline
 
-### Chi tiết từng component theo 5 layers | Text-to-SQL Agent Platform (Banking/POS)
+### Chi tiết từng component theo 5 layers | Text-to-SQL Agent Platform (BIRD benchmark → Production)
 
 ---
 
@@ -531,7 +531,7 @@ Layer quản lý kết nối database và bảo mật.
 
 | Thuộc tính | Giá trị |
 |-----------|---------|
-| **Vai trò** | Log mọi query để audit (yêu cầu compliance domain Banking) |
+| **Vai trò** | Log mọi query để audit (compliance + evaluation tracking) |
 | **Loại** | Code |
 | **Bắt buộc** | Có |
 
@@ -563,7 +563,7 @@ Layer quản lý kết nối database và bảo mật.
 | **Bắt buộc** | Có |
 
 **Chi tiết:**
-- **Business data**: 14 bảng, 90+ columns, 200K+ records (sales)
+- **Data source**: Phase 1 — BIRD SQLite databases (70+ DBs). Phase 2+ — production PostgreSQL
 - **Vector data**: pgvector extension cho embedding storage và similarity search
 - **Schema**: Tách biệt schema cho business data (`public`) và app data (`app`)
 

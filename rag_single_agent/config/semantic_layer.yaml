@@ -1,143 +1,25 @@
-## Semantic Layer — Banking/POS Text-to-SQL
-## Defines metrics, aliases, sensitive columns, enums, and business rules.
+## Semantic Layer — BIRD Multi-Database Text-to-SQL
+##
+## This file is a PLACEHOLDER. In the BIRD multi-database architecture,
+## the banking-specific semantic layer has been replaced by:
+##
+## 1. BIRD Evidence: Per-question domain hints from the BIRD dataset
+##    (e.g., "num_sales < 0.1 means less than 10000")
+##    Injected directly into the prompt via {evidence} placeholder.
+##
+## 2. Per-database schema: DDL from BIRD databases loaded dynamically
+##    per db_id, not a fixed set of metrics/aliases.
+##
+## The old banking metrics (doanh_thu, refund_rate, etc.), table aliases,
+## sensitive columns, enums, and business rules have been removed because
+## they are specific to the banking/POS schema and do not apply to BIRD's
+## 70+ diverse databases.
+##
+## If you need domain-specific semantic enrichment for a particular BIRD
+## database, add it as evidence in the evaluation pipeline rather than here.
 
-metrics:
-  doanh_thu:
-    sql: "SUM(sales.total_amount)"
-    filter: "sales.status = 'completed'"
-    aliases: ["doanh thu", "revenue", "tổng doanh thu", "total revenue", "doanh số"]
-    description: "Tổng giá trị giao dịch thành công"
-
-  so_giao_dich:
-    sql: "COUNT(sales.id)"
-    filter: ""
-    aliases: ["số giao dịch", "transaction count", "số lượng giao dịch", "tổng giao dịch", "transactions"]
-    description: "Tổng số giao dịch"
-
-  so_giao_dich_thanh_cong:
-    sql: "COUNT(sales.id)"
-    filter: "sales.status = 'completed'"
-    aliases: ["giao dịch thành công", "completed transactions", "giao dịch hoàn thành"]
-    description: "Số giao dịch có status completed"
-
-  trung_binh_giao_dich:
-    sql: "AVG(sales.total_amount)"
-    filter: "sales.status = 'completed'"
-    aliases: ["trung bình giao dịch", "average transaction", "giá trị trung bình", "avg transaction"]
-    description: "Giá trị trung bình mỗi giao dịch thành công"
-
-  refund_rate:
-    sql: "COUNT(refunds.id)::FLOAT / NULLIF(COUNT(DISTINCT sales.id), 0)"
-    filter: ""
-    aliases: ["tỷ lệ hoàn", "refund rate", "hoàn tiền", "tỷ lệ hoàn tiền"]
-    description: "Tỷ lệ giao dịch bị hoàn trả"
-
-  tong_hoan_tien:
-    sql: "SUM(refunds.amount)"
-    filter: ""
-    aliases: ["tổng hoàn tiền", "total refund", "tiền hoàn"]
-    description: "Tổng giá trị hoàn tiền"
-
-  khach_moi:
-    sql: "COUNT(customers.id)"
-    filter: "customers.created_at >= {period_start}"
-    aliases: ["khách mới", "new customers", "khách hàng mới", "số khách mới"]
-    description: "Số khách hàng mới trong kỳ"
-
-  tong_so_du:
-    sql: "SUM(accounts.balance)"
-    filter: "accounts.status = 'open'"
-    aliases: ["tổng số dư", "total balance", "số dư", "tổng tài khoản"]
-    description: "Tổng số dư tất cả tài khoản đang mở"
-
-  so_chuyen_khoan:
-    sql: "COUNT(transfers.id)"
-    filter: ""
-    aliases: ["số chuyển khoản", "transfer count", "số lượng chuyển khoản"]
-    description: "Tổng số giao dịch chuyển khoản"
-
-  tong_chuyen_khoan:
-    sql: "SUM(transfers.amount)"
-    filter: "transfers.status = 'completed'"
-    aliases: ["tổng chuyển khoản", "total transfers", "tổng tiền chuyển"]
-    description: "Tổng giá trị chuyển khoản thành công"
-
-  so_the_hoat_dong:
-    sql: "COUNT(cards.id)"
-    filter: "cards.status = 'active'"
-    aliases: ["thẻ hoạt động", "active cards", "số thẻ active"]
-    description: "Số thẻ đang hoạt động"
-
-  so_nhan_vien:
-    sql: "COUNT(employees.id)"
-    filter: "employees.is_active = true"
-    aliases: ["số nhân viên", "employee count", "nhân viên"]
-    description: "Số nhân viên đang hoạt động"
-
-  so_merchant:
-    sql: "COUNT(merchants.id)"
-    filter: ""
-    aliases: ["số merchant", "merchant count", "số nhà cung cấp", "merchants"]
-    description: "Tổng số merchants"
-
-  so_san_pham:
-    sql: "COUNT(products.id)"
-    filter: "products.active = true"
-    aliases: ["số sản phẩm", "product count", "sản phẩm"]
-    description: "Số sản phẩm đang bán"
-
-  so_terminal:
-    sql: "COUNT(terminals.id)"
-    filter: ""
-    aliases: ["số terminal", "terminal count", "số máy POS"]
-    description: "Tổng số terminal POS"
-
-aliases:
-  # Table aliases (Vietnamese → table name)
-  "giao dịch": "sales"
-  "bán hàng": "sales"
-  "doanh thu": "sales"
-  "hoàn tiền": "refunds"
-  "hoàn trả": "refunds"
-  "khách hàng": "customers"
-  "khách": "customers"
-  "tài khoản": "accounts"
-  "thẻ": "cards"
-  "nhà cung cấp": "merchants"
-  "merchant": "merchants"
-  "đối tác": "merchants"
-  "sản phẩm": "products"
-  "hàng hóa": "products"
-  "terminal": "terminals"
-  "máy POS": "terminals"
-  "chi nhánh": "branches"
-  "nhân viên": "employees"
-  "chuyển khoản": "transfers"
-  "sao kê": "statements"
-  "audit": "audit_logs"
-
-sensitive_columns:
-  - "cards.cvv"
-  - "cards.card_number"
-  - "customers.dob"
-  - "customers.email"
-  - "accounts.account_number"
-
-enums:
-  sales.status: ["completed", "pending", "failed"]
-  accounts.status: ["open", "closed", "frozen"]
-  accounts.account_type: ["checking", "savings", "credit"]
-  cards.status: ["active", "blocked", "expired"]
-  cards.card_type: ["debit", "credit", "prepaid"]
-  cards.network: ["VISA", "MASTERCARD", "AMEX"]
-  customers.kyc_status: ["unverified", "pending", "verified", "rejected"]
-  transfers.status: ["completed", "pending", "failed"]
-  employees.role: ["teller", "manager", "atm_technician", "branch_manager", "sales_rep"]
-
-business_rules:
-  - "Doanh thu (revenue) chỉ tính giao dịch có status = 'completed'"
-  - "Số dư tài khoản chỉ tính tài khoản status = 'open'"
-  - "Chuyển khoản thành công chỉ tính status = 'completed'"
-  - "Nhân viên đang làm việc chỉ tính is_active = true"
-  - "Sản phẩm đang bán chỉ tính active = true"
-  - "Khi tính refund rate, mẫu số là tổng số giao dịch (không chỉ completed)"
+metrics: {}
+aliases: {}
+sensitive_columns: []
+enums: {}
+business_rules: []
